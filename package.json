@@ -1,0 +1,26 @@
+{
+  "name": "elms-proctor-scheduler",
+  "version": "1.0.0",
+  "description": "ระบบจัดตารางคุมสอบและจัดห้องสอบ ศูนย์สอบมหาวิทยาลัยราชภัฏบุรีรัมย์ อาคารนวัตปัญญา (อาคาร 17)",
+  "type": "module",
+  "main": "src/server/app.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node --test tests/**/*.test.js",
+    "test:m1": "node --test tests/m1-data-model.test.js"
+  },
+  "keywords": [
+    "scheduling",
+    "constraint-satisfaction",
+    "cbt",
+    "proctor",
+    "elms",
+    "buriram-rajabhat-university"
+  ],
+  "author": "BRU Testing Center & Senior Software Engineer",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.3.0"
+  }
+}

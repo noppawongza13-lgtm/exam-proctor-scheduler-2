@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ระบบจัดตารางคุมสอบและจัดห้องสอบ ศูนย์สอบ CBT อาคาร 17 | มหาวิทยาลัยราชภัฏบุรีรัมย์</title>
+  <meta name="description" content="ระบบจัดตารางคุมสอบและบริหารจัดการโควต้าตามมาตรฐาน ELMS ศูนย์สอบมหาวิทยาลัยราชภัฏบุรีรัมย์ อาคารนวัตปัญญา (อาคาร 17)">
+  
+  <!-- Google Fonts: Prompt & Sarabun -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <!-- Header Section -->
+  <header class="app-header">
+    <div class="header-container">
+      <div class="brand-group">
+        <img src="/assets/bru-logo.png" alt="ตราสัญลักษณ์มหาวิทยาลัยราชภัฏบุรีรัมย์" class="bru-logo" id="headerLogo">
+        <div class="brand-text">
+          <div class="sub-title">ศูนย์สอบคอมพิวเตอร์มาตรฐาน CBT อาคารนวัตปัญญา (อาคาร 17)</div>
+          <h1 class="main-title">ระบบจัดตารางคุมสอบและจัดห้องสอบ ELMS</h1>
+          <div class="meta-tag">มหาวิทยาลัยราชภัฏบุรีรัมย์ (Buriram Rajabhat University)</div>
+        </div>
+      </div>
+      
+      <div class="header-actions">
+        <!-- Role Indicator & Demo Switcher -->
+        <div class="role-badge-box">
+          <span class="role-label">บทบาทปัจจุบัน:</span>
+          <span class="badge badge-role" id="currentRoleBadge">ADMIN</span>
+          <button class="btn btn-outline-sm" id="btnSwitchRole" title="สลับบทบาทเพื่อทดสอบสิทธิ์">
+            <span>🔄 สลับบัญชีทดสอบ</span>
+          </button>
+        </div>
+        
+        <div class="user-profile-box" id="userProfileBox">
+          <div class="user-avatar" id="userAvatar">A</div>
+          <div class="user-info">
+            <div class="user-name" id="userNameDisplay">ผู้ดูแลระบบ CBT</div>
+            <div class="user-faculty" id="userFacultyDisplay">ศูนย์สอบอาคาร 17</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="main-nav">
+      <div class="nav-container">
+        <button class="nav-tab active" data-tab="tab-dashboard" id="navDashboard">
+          📊 แดชบอร์ด & ตารางคุมสอบ
+        </button>
+        <button class="nav-tab" data-tab="tab-floorplan" id="navFloorplan">
+          🏢 ผังอาคาร 17 (Interactive Floor Plan)
+        </button>
+        <button class="nav-tab" data-tab="tab-guest" id="navGuest">
+          🔍 พอร์ทัลผู้เข้าสอบ (ค้นหาที่นั่งสอบ)
+        </button>
+        <button class="nav-tab" data-tab="tab-ai" id="navAi">
+          🤖 ผู้ช่วยอัจฉริยะ (Rules Advisor)
+        </button>
+        <button class="nav-tab" data-tab="tab-audit" id="navAudit">
+          📜 บันทึกประวัติ (Audit Log)
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <!-- Main Content Area -->
+  <main class="main-content">
+
+    <!-- TAB 1: DASHBOARD & SCHEDULE GRID -->
+    <section class="tab-pane active" id="tab-dashboard">
+      
+      <!-- Top 4 KPI Clickable Cards -->
+      <div class="kpi-grid">
+        <!-- KPI 1: Rooms -->
+        <div class="kpi-card" id="kpiRoomsCard" role="button" tabindex="0" title="คลิกเพื่อดูสารบบห้องสอบจริงทั้ง 10 ห้อง">
+          <div class="kpi-icon icon-violet">🖥️</div>
+          <div class="kpi-details">
+            <div class="kpi-title">ห้องสอบ CBT อาคาร 17</div>
+            <div class="kpi-value" id="kpiRoomsValue">10 ห้อง (520 ที่นั่ง)</div>
+            <div class="kpi-meta">ชั้น 1: 4 ห้อง (200 ที่นั่ง) | ชั้น 2: 6 ห้อง (320 ที่นั่ง)</div>
+          </div>
+          <div class="kpi-arrow">➔</div>
+        </div>
+
+        <!-- KPI 2: Staff Quota -->
+        <div class="kpi-card" id="kpiStaffCard" role="button" tabindex="0" title="คลิกเพื่อดูสถิติโควตาและการกระจายภาระงาน">
+          <div class="kpi-icon icon-gold">👥</div>
+          <div class="kpi-details">
+            <div class="kpi-title">บุคลากรคุมสอบ (Proctor Pool)</div>
+            <div class="kpi-value" id="kpiStaffValue">40 ท่าน</div>
+            <div class="kpi-meta" id="kpiStaffMeta">Jain's Index: 0.98 (เป็นธรรมยอดเยี่ยม)</div>
+          </div>
+          <div class="kpi-arrow">➔</div>
+        </div>
+
+        <!-- KPI 3: Schedule Progress -->
+        <div class="kpi-card" id="kpiStatusCard" role="button" tabindex="0" title="คลิกเพื่อดูรายละเอียดความต้องการและกะงาน">
+          <div class="kpi-icon icon-blue">📅</div>
+          <div class="kpi-details">
+            <div class="kpi-title">สถานะการจัดสรรตำแหน่ง</div>
+            <div class="kpi-value" id="kpiSlotsValue">42 / 42 ตำแหน่ง</div>
+            <div class="kpi-meta" id="kpiSlotsMeta">ครบสมบูรณ์ 100% (2 รอบสอบ)</div>
+          </div>
+          <div class="kpi-arrow">➔</div>
+        </div>
+
+        <!-- KPI 4: Rules Compliance -->
+        <div class="kpi-card" id="kpiRulesCard" role="button" tabindex="0" title="คลิกเพื่อดูผลการตรวจสอบกฎ H1-H9 และ Soft Score S1-S5">
+          <div class="kpi-icon icon-green" id="kpiRulesIcon">🛡️</div>
+          <div class="kpi-details">
+            <div class="kpi-title">ความสอดคล้องตามกฎ (Compliance)</div>
+            <div class="kpi-value text-success" id="kpiRulesValue">0 Violations</div>
+            <div class="kpi-meta" id="kpiRulesMeta">ผ่าน Hard Constraints 100% | Soft Score 92/100</div>
+          </div>
+          <div class="kpi-arrow">➔</div>
+        </div>
+      </div>
+
+      <!-- Action Toolbar -->
+      <div class="schedule-toolbar">
+        <div class="toolbar-left">
+          <!-- View Switcher -->
+          <div class="btn-group view-switcher">
+            <button class="btn btn-tab active" data-view="session" id="btnViewSession">
+              <span>🕒 มุมมองตามรอบสอบ</span>
+            </button>
+            <button class="btn btn-tab" data-view="room" id="btnViewRoom">
+              <span>🚪 มุมมองตามห้องสอบ</span>
+            </button>
+            <button class="btn btn-tab" data-view="proctor" id="btnViewProctor">
+              <span>👤 มุมมองตามผู้คุมสอบ</span>
+            </button>
+          </div>
+
+          <div class="filter-box">
+            <label for="filterSessionSelect">เลือกรอบสอบ:</label>
+            <select id="filterSessionSelect" class="form-select">
+              <option value="ALL">ทุกลักษณะรอบสอบ (เช้า + บ่าย)</option>
+              <option value="S_MORNING">รอบที่ 1: เช้า (08:30 - 11:30 น.)</option>
+              <option value="S_AFTERNOON">รอบที่ 2: บ่าย (13:00 - 16:00 น.)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="toolbar-right">
+          <button class="btn btn-icon" id="btnUndo" title="ย้อนกลับ (Undo)" disabled>
+            <span>↩️ Undo</span>
+          </button>
+          <button class="btn btn-icon" id="btnRedo" title="ทำซ้ำ (Redo)" disabled>
+            <span>↪️ Redo</span>
+          </button>
+          <button class="btn btn-secondary" id="btnResetSchedule" title="ล้างการจัดตารางที่ไม่ได้ล็อก">
+            <span>🔄 รีเซ็ต</span>
+          </button>
+          <button class="btn btn-warning" id="btnRandomProctors" style="background: linear-gradient(135deg, #F59E0B, #D97706); color: #fff; font-weight: 700; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer;" title="สุ่มสร้างรายชื่อผู้คุม 80 คนให้เพียงพอกับทุกห้องสอบทันที ไม่ต้องพิมพ์เอง">
+            <span>🎲 สุ่มผู้คุมสอบ (80 คน)</span>
+          </button>
+          <button class="btn btn-primary" id="btnAutoSolve" title="จัดตารางอัตโนมัติด้วย 5-Priority Solver">
+            <span>🚀 จัดตารางอัตโนมัติ (Solver)</span>
+          </button>
+          <button class="btn btn-outline" id="btnExportCsv" title="ดาวน์โหลดไฟล์ CSV (UTF-8 BOM สำหรับ Excel ภาษาไทย)">
+            <span>📥 ส่งออก Excel</span>
+          </button>
+          <button class="btn btn-outline" id="btnPrintSchedule" title="พิมพ์รายงานตารางคุมสอบ">
+            <span>🖨️ พิมพ์รายงาน</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Schedule Grid Container -->
+      <div class="schedule-container" id="scheduleContainer">
+        <!-- Rendered dynamically by JS -->
+      </div>
+
+    </section>
+
+    <!-- TAB 2: INTERACTIVE BUILDING 17 FLOORPLAN -->
+    <section class="tab-pane" id="tab-floorplan">
+      <div class="floorplan-layout">
+        <div class="floorplan-sidebar">
+          <div class="sidebar-card">
+            <h3>🏢 แผนผังอาคารนวัตปัญญา</h3>
+            <p class="text-muted">คลิกเลือกชั้นและห้องสอบเพื่อดูผังที่นั่ง รายละเอียด และกรรมการคุมสอบ</p>
+            
+            <div class="floor-selector">
+              <button class="btn btn-floor active" data-floor="1" id="btnFloor1">
+                <span>ชั้นที่ 1 (วินิตปัญญา)</span>
+                <small>ห้อง 17108 - 17111 (4 ห้อง 200 ที่นั่ง)</small>
+              </button>
+              <button class="btn btn-floor" data-floor="2" id="btnFloor2">
+                <span>ชั้นที่ 2 (สุตปัญญา & หงส์พันธ์)</span>
+                <small>ห้อง 17201 - 17213 (6 ห้อง 320 ที่นั่ง)</small>
+              </button>
+            </div>
+
+            <!-- Selected Room Info Card -->
+            <div class="room-inspect-box" id="roomInspectBox">
+              <div class="inspect-header">
+                <span class="badge badge-primary" id="inspectRoomFloor">ชั้น 1</span>
+                <h4 id="inspectRoomCode">ห้อง 17108</h4>
+              </div>
+              <div class="inspect-name" id="inspectRoomName">ห้องวินิตปัญญา 5</div>
+              <div class="inspect-metrics">
+                <div class="metric-item">
+                  <span class="metric-label">ความจุที่นั่ง:</span>
+                  <span class="metric-val" id="inspectRoomCapacity">50 ที่นั่ง</span>
+                </div>
+                <div class="metric-item">
+                  <span class="metric-label">ผู้คุมสอบที่ต้องมี:</span>
+                  <span class="metric-val" id="inspectRoomProctors">2 ท่าน</span>
+                </div>
+                <div class="metric-item">
+                  <span class="metric-label">ช่วงเลขที่นั่ง:</span>
+                  <span class="metric-val" id="inspectRoomSeats">001 - 050</span>
+                </div>
+                <div class="metric-item">
+                  <span class="metric-label">โต๊ะลงทะเบียน:</span>
+                  <span class="metric-val" id="inspectRoomReg">โต๊ะที่ 1 โถงชั้น 1</span>
+                </div>
+              </div>
+              
+              <div class="inspect-staff-list" id="inspectStaffList">
+                <!-- Staff assigned to this room rendered by JS -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="floorplan-canvas-area">
+          <div class="canvas-header">
+            <span class="canvas-title" id="canvasFloorTitle">พิมพ์เขียวสถาปัตยกรรม: อาคารนวัตปัญญา (อาคาร 17) ชั้น 1</span>
+            <div class="canvas-legend">
+              <span class="legend-item"><span class="legend-color color-cbt"></span> ห้องสอบ CBT (คลิกได้)</span>
+              <span class="legend-item"><span class="legend-color color-office"></span> สำนักงาน / ห้องบริการ</span>
+              <span class="legend-item"><span class="legend-color color-stairs"></span> บันไดเชื่อมชั้น 1-2</span>
+            </div>
+          </div>
+
+          <div class="svg-wrapper" id="svgFloorplanWrapper">
+            <!-- Architectural SVG rendered dynamically -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: GUEST EXAMINEE PORTAL -->
+    <section class="tab-pane" id="tab-guest">
+      <div class="guest-portal-container">
+        <!-- Search Card -->
+        <div class="guest-search-card">
+          <div class="search-hero">
+            <h2>🔍 ค้นหาเลขที่นั่งสอบและห้องสอบ CBT</h2>
+            <p>ศูนย์สอบมหาวิทยาลัยราชภัฏบุรีรัมย์ อาคารนวัตปัญญา (อาคาร 17)</p>
+          </div>
+
+          <div class="search-form-group">
+            <div class="input-with-button">
+              <input type="text" id="inputCitizenId" class="form-input-lg" placeholder="กรอกเลขประจำตัวประชาชน 13 หลัก (หรือ 4 หลักท้าย)" maxlength="17" autocomplete="off">
+              <button class="btn btn-primary-lg" id="btnSearchSeat">
+                <span>🔎 ค้นหาที่นั่งสอบ</span>
+              </button>
+            </div>
+            <div class="search-tip">
+              🔒 ข้อมูลได้รับการคุ้มครองตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล (PDPA) ระบบจะแสดงผลแบบ Mask ข้อมูลเลขประจำตัว
+            </div>
+          </div>
+
+          <!-- Search Result Card -->
+          <div class="search-result-box hidden" id="searchResultBox">
+            <div class="result-header">
+              <div class="examinee-name" id="resExamineeName">ผู้เข้าสอบทดสอบ</div>
+              <div class="examinee-id" id="resExamineeId">1-3101-*****--**-5</div>
+            </div>
+            
+            <div class="result-cards-grid">
+              <div class="res-card highlight-card">
+                <div class="res-card-label">เลขที่นั่งสอบของคุณ</div>
+                <div class="res-card-value text-gold" id="resSeatNumber">024</div>
+              </div>
+              <div class="res-card">
+                <div class="res-card-label">ห้องสอบ / ชื่อห้อง</div>
+                <div class="res-card-value" id="resRoomInfo">ห้อง 17108 (วินิตปัญญา 5)</div>
+              </div>
+              <div class="res-card">
+                <div class="res-card-label">ชั้นที่ / อาคาร</div>
+                <div class="res-card-value" id="resFloorInfo">ชั้น 1 อาคารนวัตปัญญา</div>
+              </div>
+              <div class="res-card">
+                <div class="res-card-label">จุดลงทะเบียนก่อนเข้าห้อง</div>
+                <div class="res-card-value" id="resRegTable">โต๊ะที่ 1 โถงชั้น 1</div>
+              </div>
+            </div>
+
+            <div class="arrival-notice" id="resArrivalNotice">
+              <!-- Notice list -->
+            </div>
+          </div>
+        </div>
+
+        <!-- Exam Regulations Section -->
+        <div class="regulations-container">
+          <h3 class="reg-title">📋 ระเบียบและข้อปฏิบัติการสอบมาตรฐาน CBT อาคาร 17</h3>
+          <div class="reg-grid">
+            <div class="reg-card">
+              <div class="reg-icon">⏰</div>
+              <h4>เวลาการรายงานตัว</h4>
+              <p>ผู้เข้าสอบต้องมาถึงจุดลงทะเบียนล่วงหน้าอย่างน้อย 45 นาที ก่อนเวลาเริ่มสอบ ประตูปิดก่อนสอบ 15 นาที หากมาสายจะไม่อนุญาตให้เข้าห้องสอบทุกกรณี</p>
+            </div>
+            <div class="reg-card">
+              <div class="reg-icon">🪪</div>
+              <h4>เอกสารประจำตัว</h4>
+              <p>ต้องแสดงบัตรประจำตัวประชาชนตัวจริง หรือบัตรที่ทางราชการออกให้ที่มีรูปถ่ายชัดเจนและยังไม่หมดอายุ พร้อมบัตรประจำตัวผู้เข้าสอบ</p>
+            </div>
+            <div class="reg-card">
+              <div class="reg-icon">🚫</div>
+              <h4>สิ่งของต้องห้าม</h4>
+              <p>ห้ามนำโทรศัพท์มือถือ นาฬิกาอัจฉริยะ อุปกรณ์สื่อสารทุกชนิด เครื่องคำนวณ หรือกระดาษทดเข้ามาในห้องสอบโดยเด็ดขาด</p>
+            </div>
+            <div class="reg-card">
+              <div class="reg-icon">👔</div>
+              <h4>การแต่งกาย</h4>
+              <p>แต่งกายด้วยชุดสุภาพตามระเบียบมหาวิทยาลัยราชภัฏบุรีรัมย์ ห้ามสวมกางเกงขาสั้น เสื้อไม่มีแขน หรือรองเท้าแตะเข้าห้องสอบ</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: AI RULES ASSISTANT -->
+    <section class="tab-pane" id="tab-ai">
+      <div class="ai-chat-layout">
+        <div class="ai-chat-container">
+          <div class="chat-header">
+            <div class="chat-agent-info">
+              <div class="agent-avatar">🤖</div>
+              <div>
+                <div class="agent-name">ผู้ช่วยอัจฉริยะระบบจัดตาราง ELMS (Rules Advisor)</div>
+                <div class="agent-status">🟢 เชื่อมต่อกับ Rule Checker Engine แบบ Real-time</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="chat-messages" id="chatMessages">
+            <div class="chat-bubble ai">
+              <div class="bubble-sender">🤖 ผู้ช่วยอัจฉริยะ ELMS:</div>
+              <div class="bubble-content">
+                สวัสดีครับ ผมเป็นผู้ช่วยอัจฉริยะประจำศูนย์สอบ CBT อาคาร 17 มรภ.บุรีรัมย์<br>
+                ผมสามารถตรวจสอบความถูกต้องของตารางตามกฎ Hard Constraints (H1-H9), อธิบายเหตุผลการจัดตำแหน่ง, หรือวิเคราะห์โควตาภาระงานได้ทันทีครับ
+              </div>
+            </div>
+          </div>
+
+          <!-- Suggestion Chips -->
+          <div class="chat-suggestions">
+            <button class="chip" data-prompt="ตรวจสอบตารางปัจจุบันมีข้อผิดพลาดหรือไม่">🛡️ ตรวจสอบตารางปัจจุบัน (H1-H9)</button>
+            <button class="chip" data-prompt="ห้อง 17201 ต้องใช้ผู้คุมกี่คน">❓ ห้อง 17201 ใช้ผู้คุมกี่คน</button>
+            <button class="chip" data-prompt="จำนวนอัตรากำลังที่ต้องการทั้งหมด">📊 สรุปความต้องการอัตรากำลัง</button>
+            <button class="chip" data-prompt="ใครมีชั่วโมงคุมเกินโควตาบ้าง">⚠️ ตรวจสอบโควตาผู้คุมสอบ</button>
+          </div>
+
+          <div class="chat-input-bar">
+            <input type="text" id="chatInput" placeholder="พิมพ์คำถามเกี่ยวกับกฎการจัดตาราง หรือข้อสงสัยที่นี่..." class="chat-input">
+            <button class="btn btn-primary" id="btnSendChat">
+              <span>ส่งคำถาม ➔</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: AUDIT LOG -->
+    <section class="tab-pane" id="tab-audit">
+      <div class="audit-container">
+        <div class="audit-header">
+          <h3>📜 บันทึกประวัติการกระทำและความปลอดภัย (Audit Trail)</h3>
+          <p class="text-muted">บันทึกทุกการเข้าสู่ระบบ, การมอบหมายงาน, การจัดตาราง และการลงนามดิจิทัล</p>
+        </div>
+        <div class="audit-table-wrapper">
+          <table class="data-table" id="auditTable">
+            <thead>
+              <tr>
+                <th>เวลา (Timestamp)</th>
+                <th>ผู้ดำเนินการ (User)</th>
+                <th>การกระทำ (Action)</th>
+                <th>ประเภทเป้าหมาย</th>
+                <th>รายละเอียด (Details)</th>
+                <th>IP Address</th>
+              </tr>
+            </thead>
+            <tbody id="auditTableBody">
+              <!-- Rendered by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- MODALS -->
+
+  <!-- Modal 1: 10 Real Rooms Directory -->
+  <div class="modal-overlay hidden" id="modalRooms">
+    <div class="modal-box modal-lg">
+      <div class="modal-header">
+        <h3>🏢 สารบบ 10 ห้องสอบจริง ศูนย์สอบ CBT อาคาร 17 (520 ที่นั่ง)</h3>
+        <button class="btn-close" data-close="modalRooms">✕</button>
+      </div>
+      <div class="modal-body" id="modalRoomsBody">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 2: Proctor Quota & Seniority Pool -->
+  <div class="modal-overlay hidden" id="modalProctors">
+    <div class="modal-box modal-lg">
+      <div class="modal-header">
+        <h3>👥 รายชื่อและโควตาภาระงานผู้คุมสอบ (Proctor Pool & Seniority)</h3>
+        <button class="btn-close" data-close="modalProctors">✕</button>
+      </div>
+      <div class="modal-body" id="modalProctorsBody">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 3: Rule Checker Details (H1-H9 & S1-S5) -->
+  <div class="modal-overlay hidden" id="modalRules">
+    <div class="modal-box modal-lg">
+      <div class="modal-header">
+        <h3>🛡️ ผลการประเมินกฎเกณฑ์ (Compliance Engine Report)</h3>
+        <button class="btn-close" data-close="modalRules">✕</button>
+      </div>
+      <div class="modal-body" id="modalRulesBody">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 4: Slot Assignment & Candidate Selector -->
+  <div class="modal-overlay hidden" id="modalAssign">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3 id="modalAssignTitle">มอบหมายผู้คุมสอบ</h3>
+        <button class="btn-close" data-close="modalAssign">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="assign-slot-info" id="assignSlotInfo"></div>
+        <div class="candidate-search-box">
+          <input type="text" id="candidateSearchInput" class="form-input" placeholder="ค้นหาชื่อผู้คุมสอบ...">
+        </div>
+        <div class="candidate-list" id="candidateList">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 5: Explainability Details -->
+  <div class="modal-overlay hidden" id="modalExplain">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>💡 เหตุผลเบื้องหลังการจัดสรรตำแหน่ง (Assignment Explanation)</h3>
+        <button class="btn-close" data-close="modalExplain">✕</button>
+      </div>
+      <div class="modal-body" id="modalExplainBody">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal 6: Role Switcher Modal -->
+  <div class="modal-overlay hidden" id="modalRoleSwitcher">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>🔄 สลับบัญชีผู้ใช้ทดสอบ (Demo Role Switcher)</h3>
+        <button class="btn-close" data-close="modalRoleSwitcher">✕</button>
+      </div>
+      <div class="modal-body" id="modalRoleSwitcherBody">
+        <!-- Rendered by JS -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notifications -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
