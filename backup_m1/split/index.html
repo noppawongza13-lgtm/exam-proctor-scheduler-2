@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="ศูนย์สอบคอมพิวเตอร์ (CBT) อาคาร 17 มหาวิทยาลัยราชภัฏบุรีรัมย์ และระบบจัดตารางผู้คุมสอบอัตโนมัติ ตรวจสอบที่นั่งสอบและผังห้องสอบ">
+  <title>ศูนย์สอบ CBT อาคาร 17 | มหาวิทยาลัยราชภัฏบุรีรัมย์</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sarabun:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+
+  <!-- ==========================================================================
+       CSS Stylesheets (แยกตามหน้าที่ เพื่อความเป็นระเบียบและบำรุงรักษาง่าย)
+       ========================================================================== -->
+  <!-- 1. ตัวแปรสี, โทนสีม่วง-ทอง และระบบธีมมืด/สว่าง -->
+  <link rel="stylesheet" href="css/01-variables.css">
+  <!-- 2. โครงสร้างหลัก Layout, Sidebar, Topbar และป้ายผู้ใช้ -->
+  <link rel="stylesheet" href="css/02-layout.css">
+  <!-- 3. คอมโพเนนต์ UI พื้นฐาน: ตาราง, การ์ด, ปุ่ม, ฟอร์ม, ป้ายสถานะ และ Modals -->
+  <link rel="stylesheet" href="css/03-components.css">
+  <!-- 4. ผังอาคาร 17 สถาปัตยกรรม 2 มิติ และ SVG Room Highlights -->
+  <link rel="stylesheet" href="css/04-floorplan.css">
+  <!-- 5. พอร์ทัลผู้เข้าชม, ข่าวประชาสัมพันธ์, ค้นหาที่นั่ง และบัตรสอบ CBT -->
+  <link rel="stylesheet" href="css/05-visitor-portal.css">
+  <!-- 6. เลย์เอาต์มือถือ Mobile Responsive, Drawer, Mobile Cards & Bottom Bar -->
+  <link rel="stylesheet" href="css/06-responsive.css">
+</head>
+<body>
+  <!-- Container สำหรับการเรนเดอร์ Single Page Application โดย AppView -->
+  <div id="app">
+    <div style="display: flex; height: 100vh; align-items: center; justify-content: center; font-size: 18px; color: var(--text-muted);">
+      ⏳ กำลังโหลดศูนย์สอบ CBT อาคาร 17 มหาวิทยาลัยราชภัฏบุรีรัมย์...
+    </div>
+  </div>
+
+  <!-- ==========================================================================
+       JavaScript Modules (เรียงตามลำดับ Dependency Order โหลดแบบ Global Scope)
+       เปิดใช้งานได้สมบูรณ์ทั้ง localhost และเปิดตรงผ่านเบราว์เซอร์ (file://)
+       ========================================================================== -->
+
+  <!-- [ลำดับ 01 - 02] ยูทิลิตี้พื้นฐาน (PRNG & Thai Date) -->
+  <script src="js/01-prng.js"></script>
+  <script src="js/02-thai-date.js"></script>
+
+  <!-- [ลำดับ 03 - 08] ข้อมูลระบบ, การตั้งค่า, ตราสัญลักษณ์ และภาพแปลน Base64 -->
+  <script src="js/03-settings.js"></script>
+  <script src="js/04-branding.js"></script>
+  <script src="js/05-models.js"></script>
+  <script src="js/06-seed.js"></script>
+  <script src="js/07-csv-io.js"></script>
+  <script src="js/08-blueprint-base64.js"></script>
+
+  <!-- [ลำดับ 09 - 12] กฎเกณฑ์และตัวตรวจความถูกต้อง (Hard Rules H1-H9, Soft Rules S1-S6, Validator, Feasibility) -->
+  <script src="js/09-hard-constraints.js"></script>
+  <script src="js/10-soft-constraints.js"></script>
+  <script src="js/11-validator.js"></script>
+  <script src="js/12-feasibility.js"></script>
+
+  <!-- [ลำดับ 13 - 16] อัลกอริทึมจัดตารางและประเมินผล (Scorer, Explain, Greedy Solver, Min Staff) -->
+  <script src="js/13-scorer.js"></script>
+  <script src="js/14-explain.js"></script>
+  <script src="js/15-greedy-solver.js"></script>
+  <script src="js/16-min-proctor-calc.js"></script>
+
+  <!-- [ลำดับ 17 - 18] ระบบส่งออกเอกสาร (Excel Workbook & PDF Print / Sign-off Sheets) -->
+  <script src="js/17-excel-export.js"></script>
+  <script src="js/18-pdf-export.js"></script>
+
+  <!-- [ลำดับ 19 - 20] State Store ส่วนกลาง (appState) และชุดทดสอบระบบ 19 ข้อ -->
+  <script src="js/19-state.js"></script>
+  <script src="js/20-tests.js"></script>
+
+  <!-- [ลำดับ 21] ProctorAI Core Module -->
+  <script src="js/21-proctor-agent.js"></script>
+
+  <!-- [ลำดับ 22 - 24] ส่วนติดต่อผู้ใช้ย่อย (ผังอาคาร 17, KPI Modals, พอร์ทัลผู้เข้าชม) -->
+  <script src="js/22-building-floor-plan.js"></script>
+  <script src="js/23-kpi-modals.js"></script>
+  <script src="js/24-visitor-portal.js"></script>
+
+  <!-- [ลำดับ 25] AppView Controller หลักของระบบ -->
+  <script src="js/25-app-view.js"></script>
+
+  <!-- [ลำดับ 26] Application Entry Point เริ่มต้นระบบเมื่อหน้าเว็บโหลดเสร็จ -->
+  <script src="js/26-main.js"></script>
+</body>
+</html>

@@ -1,0 +1,2339 @@
+/**
+ * ระบบจัดการสถานะและข้อมูลของแอปพลิเคชัน (Application State Management)
+ * รองรับ:
+ * - Reactive state พร้อม Persistence (localStorage)
+ * - Undo / Redo ขั้นต่ำ 30 ขั้น (ข้อกำหนด 7.5)
+ * - Version Snapshots & Diffing (ข้อกำหนด 7.8, 7.9)
+ * - Audit Log อัตโนมัติ (ข้อกำหนด 3.9, 7.12)
+ * - การจัดตารางแบบ What-if Simulator (ข้อกำหนด 7.7)
+ * - ระบบจัดการผู้คุมลากะทันหันและเสนอตัวแทน (ข้อกำหนด 7.6)
+ */
+
+import { PRNG } from '../utils/prng.js';
+import { generateSeedData, SEED_PRESETS, REAL_BRU_PERSONNEL, REAL_EXAM_ROOM_CONFIGS } from '../data/seed.js';
+import { DEFAULT_SETTINGS, cloneSettings } from '../data/settings.js';
+import { validateSchedule, canProctorTakeSlot } from '../rules/validator.js';
+import { solveSchedule } from '../solver/greedy-solver.js';
+import { calculateCandidateScore } from '../solver/scorer.js';
+import { generateAssignmentReason } from '../solver/explain.js';
+import { calculateMinimumProctors } from '../solver/min-proctor-calc.js';
+
+const STORAGE_KEY = 'EXAM_PROCTOR_SCHEDULER_V1';
+
+export class AppState {
+  constructor() {
+    this.listeners = new Set();
+    this.undoStack = [];
+    this.redoStack = [];
+    this.maxUndoDepth = 30;
+
+    // โหลดข้อมูลเริ่มต้นหรือจาก LocalStorage
+    this.loadInitialData();
+
+    // ซิงค์ข้อมูลกับเซิร์ฟเวอร์แบบเรียลไทม์ (สำหรับให้โทรศัพท์มือถือและคอมพิวเตอร์เห็นข้อมูลตารางตรงกัน)
+    if (typeof window !== 'undefined') {
+      this.syncWithServer(true);
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) {
+            this.syncWithServer(false);
+          }
+        });
+      }
+      window.addEventListener('focus', () => {
+        this.syncWithServer(false);
+      });
+      setInterval(() => {
+        if (typeof document !== 'undefined' && !document.hidden) {
+          this.syncWithServer(false);
+        }
+      }, 2000);
+    }
+  }
+
+  loadInitialData() {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null;
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        this.rooms = parsed.rooms || [];
+        this.proctors = parsed.proctors || [];
+        this.sessions = parsed.sessions || [];
+        this.allocations = parsed.allocations || [];
+        this.unavailabilities = parsed.unavailabilities || [];
+        this.assignments = parsed.assignments || [];
+        this.settings = parsed.settings || cloneSettings(DEFAULT_SETTINGS);
+        if (!this.settings?.project?.universityName || this.settings.project.universityName === 'มหาวิทยาลัย' || this.settings.project.universityName === 'มหาวิทยาลัยธรรมสถิต') {
+          this.settings.project.universityName = 'มหาวิทยาลัยราชภัฏบุรีรัมย์';
+          this.settings.project.universityNameEn = 'Buriram Rajabhat University';
+          this.settings.project.campusLocation = 'ศูนย์สอบคอมพิวเตอร์ อาคาร 17 มหาวิทยาลัยราชภัฏบุรีรัมย์';
+        }
+        this.versions = parsed.versions || [];
+        this.auditLogs = parsed.auditLogs || [];
+        this.examinees = Array.isArray(parsed.examinees) ? parsed.examinees : [];
+        this.currentStatus = parsed.currentStatus || 'draft'; // draft | review | published
+        this.confirmedAssignments = Array.isArray(parsed.confirmedAssignments)
+          ? parsed.confirmedAssignments
+          : (this.currentStatus === 'published' ? JSON.parse(JSON.stringify(this.assignments)) : []);
+        this.pendingSwaps = Array.isArray(parsed.pendingSwaps) ? parsed.pendingSwaps : [];
+        this.swapDocIssued = Boolean(parsed.swapDocIssued);
+        this.swapDocHistory = Array.isArray(parsed.swapDocHistory) ? parsed.swapDocHistory : [];
+        this.lastConfirmedAt = parsed.lastConfirmedAt || null;
+        this.hasUnconfirmedChanges = parsed.hasUnconfirmedChanges !== undefined
+          ? Boolean(parsed.hasUnconfirmedChanges)
+          : (this.assignments.length > 0 && this.currentStatus !== 'published');
+        this.currentUser = parsed.currentUser || {
+          id: 'admin',
+          role: 'admin',
+          name: 'ผู้ดูแลระบบ (Admin)',
+          proctorId: null
+        };
+        this.updatedAt = Number(parsed.updatedAt) || 0;
+        // ตรวจสอบและอัปเกรดเป็นชุดข้อมูลบุคลากรจริง 42 ท่านและ 6 รอบสอบ (27-29 มี.ค. 2569) 10 ห้อง CBT 520 ที่นั่ง
+        const hasRealPersonnel = this.proctors && this.proctors.some(p => p.firstName === 'เลอสันต์');
+        const hasSixSessions = this.sessions && this.sessions.length === 6 && this.sessions[0].date === '2026-03-27';
+        if (!hasRealPersonnel || !hasSixSessions || !this.rooms || this.rooms.length < 10 || !this.rooms[0].officialName) {
+          const freshSeed = generateSeedData({ seed: 42, proctorCount: 52 });
+          this.rooms = freshSeed.rooms;
+          this.proctors = freshSeed.proctors;
+          this.sessions = freshSeed.sessions;
+          this.allocations = freshSeed.allocations;
+          this.unavailabilities = freshSeed.unavailabilities;
+          this.assignments = [];
+          this.confirmedAssignments = [];
+          this.pendingSwaps = [];
+          this.swapDocIssued = false;
+          this.hasUnconfirmedChanges = false;
+          this.lastConfirmedAt = null;
+          this.persist();
+        }
+
+        // ตรวจสอบความสมบูรณ์ของผังที่นั่งห้องสอบ (กู้คืนโต๊ะเดิมหากมีกรณีโต๊ะสูญหายจากการบันทึก)
+        if (Array.isArray(this.rooms)) {
+          let healedAny = false;
+          this.rooms.forEach(r => {
+            const cfg = (REAL_EXAM_ROOM_CONFIGS || []).find(c => c.code === (r.roomCode || r.code || r.id));
+            if (cfg && cfg.blocks && r.blocks) {
+              let curCount = 0;
+              r.blocks.forEach(b => { if (b.columns) b.columns.forEach(col => curCount += col.length); });
+              if (curCount < cfg.capacity) {
+                const restoredBlocks = JSON.parse(JSON.stringify(cfg.blocks));
+                let curDesks = [];
+                r.blocks.forEach(b => { if (b.columns) b.columns.forEach(col => curDesks.push(...col)); });
+                let defDesks = [];
+                cfg.blocks.forEach(b => { if (b.columns) b.columns.forEach(col => defDesks.push(...col)); });
+                const addedDesks = curDesks.filter(d => !defDesks.includes(d));
+                if (addedDesks.length > 0) {
+                  const lastBlock = restoredBlocks[restoredBlocks.length - 1];
+                  lastBlock.columns[lastBlock.columns.length - 1].push(...addedDesks);
+                }
+                r.blocks = restoredBlocks;
+                r.capacity = defDesks.length + addedDesks.length;
+                healedAny = true;
+              }
+            }
+          });
+          if (healedAny) {
+            this.persist();
+          }
+        }
+
+        // ตรวจสอบและอัปเดตรายละเอียดเจ้าหน้าที่ศูนย์คอมพิวเตอร์และอินเทอร์เน็ตให้ถูกต้อง
+        if (this.proctors && Array.isArray(this.proctors)) {
+          const compCenterStaffMap = {
+            'P029': { academicTitle: 'นาย', firstName: 'ยุทธนา', lastName: 'อาจทวีกุล', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P030': { academicTitle: 'นาย', firstName: 'พัฒนพงษ์', lastName: 'จงปัตนา', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P031': { academicTitle: 'นาย', firstName: 'สนทนา', lastName: 'สัตตารัมย์', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P032': { academicTitle: 'นางสาว', firstName: 'วีราพัชร์', lastName: 'ปุญญพัฒนศิริ', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P033': { academicTitle: 'นาย', firstName: 'อดิสรณ์', lastName: 'แก้วดวง', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P034': { academicTitle: 'นาย', firstName: 'รักเกียรติ', lastName: 'เสาร์วงศ์', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P035': { academicTitle: 'นาย', firstName: 'ฐาปกรณ์', lastName: 'เสียงวังเวง', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P036': { academicTitle: 'นาย', firstName: 'ปณวัชร์', lastName: 'อะโรคา', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P037': { academicTitle: 'นาย', firstName: 'วัชรินทร์', lastName: 'เมื่อประโคน', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P038': { academicTitle: 'นาย', firstName: 'อาณัติ', lastName: 'กึมรัมย์', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P040': { academicTitle: 'นาย', firstName: 'พรพิสุทธิ์', lastName: 'ธิราช', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P041': { academicTitle: 'นาย', firstName: 'อภิสิทธิ์ธำรง', lastName: 'แสงเสดาะ', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' },
+            'P042': { academicTitle: 'นาย', firstName: 'ธนกฤต', lastName: 'ทะนวนรัมย์', department: 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต' }
+          };
+
+          for (const p of this.proctors) {
+            if (compCenterStaffMap[p.id]) {
+              p.department = compCenterStaffMap[p.id].department;
+              p.lastName = compCenterStaffMap[p.id].lastName;
+              p.firstName = compCenterStaffMap[p.id].firstName;
+              p.academicTitle = compCenterStaffMap[p.id].academicTitle;
+            } else if (p.department === 'สำนักบริการคอมพิวเตอร์') {
+              p.department = 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต';
+            }
+          }
+
+          // เพิ่มรายชื่อเจ้าหน้าที่ที่ยังไม่มีในระบบ (ถ้ามี)
+          if (typeof REAL_BRU_PERSONNEL !== 'undefined' && Array.isArray(REAL_BRU_PERSONNEL)) {
+            for (const [id, info] of Object.entries(compCenterStaffMap)) {
+              const exists = this.proctors.some(p => p.id === id || (p.firstName === info.firstName && (p.lastName === info.lastName || p.lastName === 'กัมรัมย์')));
+              if (!exists) {
+                const seedP = REAL_BRU_PERSONNEL.find(x => x.id === id);
+                if (seedP) {
+                  this.proctors.push({
+                    ...seedP,
+                    ...info,
+                    pool: 'core',
+                    keepSameRoom: true,
+                    maxHours: (seedP.projectQuota || 6) * 4.5,
+                    isActive: true
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        if (this.sessions) {
+          for (const s of this.sessions) {
+            s.prepMinutes = 0;
+            s.wrapMinutes = 0;
+          }
+        }
+        if (this.settings?.hardConstraints) {
+          this.settings.hardConstraints.h6_min_rest_minutes_between_sessions = 0;
+        }
+
+        // ตรวจสอบและอัปเกรดข้อมูลผู้เข้าสอบให้ตรงกับประเภทการสอบ ก.พ. และ คุรุสภา (ลบคำว่า "คณะ" มหาวิทยาลัยออก)
+        if (Array.isArray(this.examinees) && this.examinees.some(e => e.faculty && e.faculty.includes('คณะ'))) {
+          const examCategories = [
+            { 
+              name: 'สอบ ก.พ. (ระดับปริญญาตรี)', 
+              majors: ['สาขาวิชานิติศาสตร์', 'สาขาวิชาวิทยาการคอมพิวเตอร์', 'สาขาวิชาการบัญชีและการเงิน', 'สาขาวิชารัฐศาสตร์/รปศ.', 'สาขาวิชาเศรษฐศาสตร์'],
+              subjectCode: 'OCSC-CBT',
+              subjectName: 'การสอบวัดความรู้ความสามารถทั่วไป (ก.พ. ภาค ก CBT)'
+            },
+            { 
+              name: 'สอบคุรุสภา (วิชาชีพครู)', 
+              majors: ['กลุ่มวิชาคอมพิวเตอร์ศึกษา', 'กลุ่มวิชาภาษาไทย', 'กลุ่มวิชาคณิตศาสตร์', 'กลุ่มวิชาภาษาอังกฤษ', 'กลุ่มวิชาการศึกษาปฐมวัย', 'กลุ่มวิชาวิทยาศาสตร์ทั่วไป'],
+              subjectCode: 'KSP-CBT',
+              subjectName: 'การทดสอบและประเมินสมรรถนะทางวิชาชีพครู (คุรุสภา CBT)'
+            },
+            { 
+              name: 'สอบ ก.พ. (ระดับปริญญาโท)', 
+              majors: ['สาขาวิชารัฐประศาสนศาสตร์มหาบัณฑิต', 'สาขาวิชาบริหารธุรกิจมหาบัณฑิต', 'สาขาวิชานิติศาสตร์มหาบัณฑิต'],
+              subjectCode: 'OCSC-CBT',
+              subjectName: 'การสอบวัดความรู้ความสามารถทั่วไป (ก.พ. ภาค ก CBT)'
+            },
+            { 
+              name: 'สอบ ก.พ. (ระดับ ปวส./อนุปริญญา)', 
+              majors: ['สาขาวิชาการบัญชี', 'สาขาวิชาคอมพิวเตอร์ธุรกิจ', 'สาขาวิชาช่างไฟฟ้ากำลัง'],
+              subjectCode: 'OCSC-CBT',
+              subjectName: 'การสอบวัดความรู้ความสามารถทั่วไป (ก.พ. ภาค ก CBT)'
+            }
+          ];
+          this.examinees.forEach((e, idx) => {
+            if (e.faculty && e.faculty.includes('คณะ')) {
+              const isTeacher = e.faculty.includes('ครุศาสตร์') || (e.major && e.major.includes('ศึกษา'));
+              const catObj = isTeacher ? examCategories[1] : examCategories[idx % examCategories.length];
+              e.faculty = catObj.name;
+              e.major = catObj.majors[idx % catObj.majors.length];
+              e.subjectCode = catObj.subjectCode;
+              e.subjectName = catObj.subjectName;
+            }
+          });
+          this.persist();
+        }
+        return;
+      } catch (e) {
+        console.warn('Failed to parse saved state, creating fresh seed data');
+      }
+    }
+
+    // สร้างข้อมูลเริ่มต้น (42 บุคลากรจริง มรภ.บุรีรัมย์ / 10 ห้องสอบ CBT 520 ที่นั่ง อาคาร 17 / 6 รอบสอบ)
+    const seed = generateSeedData({ seed: 42, proctorCount: 52 });
+    this.rooms = seed.rooms;
+    this.proctors = seed.proctors;
+    this.sessions = seed.sessions;
+    this.allocations = seed.allocations;
+    this.unavailabilities = seed.unavailabilities;
+    this.assignments = [];
+    this.confirmedAssignments = [];
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+    this.swapDocHistory = [];
+    this.hasUnconfirmedChanges = false;
+    this.lastConfirmedAt = null;
+    this.settings = cloneSettings(DEFAULT_SETTINGS);
+    this.versions = [];
+    this.auditLogs = [];
+    this.examinees = [];
+    this.currentStatus = 'draft';
+    this.currentUser = {
+      id: 'admin',
+      role: 'admin',
+      name: 'ผู้ดูแลระบบ (Admin)',
+      proctorId: null
+    };
+
+    this.logAudit('SYSTEM', 'INITIALIZE', 'APP', 'init', null, 'สร้างข้อมูลเริ่มต้นสำเร็จ (บุคลากรจริง มรภ.บุรีรัมย์ 42 ท่าน / 10 ห้อง CBT 520 ที่นั่ง / 6 รอบ)');
+    this.persist();
+  }
+
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  notify() {
+    this.persist();
+    for (const listener of this.listeners) {
+      try {
+        listener(this);
+      } catch (err) {
+        console.error('State listener error:', err);
+      }
+    }
+  }
+
+  persist() {
+    try {
+      this.updatedAt = Date.now();
+      const stateToSave = {
+        rooms: this.rooms,
+        proctors: this.proctors,
+        sessions: this.sessions,
+        allocations: this.allocations,
+        unavailabilities: this.unavailabilities,
+        assignments: this.assignments,
+        confirmedAssignments: this.confirmedAssignments,
+        pendingSwaps: this.pendingSwaps,
+        swapDocIssued: this.swapDocIssued,
+        swapDocHistory: (this.swapDocHistory || []).slice(0, 30),
+        hasUnconfirmedChanges: this.hasUnconfirmedChanges,
+        lastConfirmedAt: this.lastConfirmedAt,
+        settings: this.settings,
+        versions: this.versions,
+        auditLogs: this.auditLogs.slice(-200), // เก็บ 200 รายการล่าสุด
+        examinees: this.examinees || [],
+        currentStatus: this.currentStatus,
+        currentUser: this.currentUser,
+        updatedAt: this.updatedAt
+      };
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
+      }
+
+      // ส่งข้อมูลไปยังเซิร์ฟเวอร์เพื่อให้โทรศัพท์มือถือและอุปกรณ์อื่นซิงค์ข้อมูลตรงกันทันที
+      if (typeof window !== 'undefined' && typeof fetch === 'function') {
+        if (this._syncTimer) clearTimeout(this._syncTimer);
+        this._syncTimer = setTimeout(() => {
+          fetch('/api/state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(stateToSave)
+          })
+          .then(res => res.json())
+          .then(data => {
+            if (data && data.updatedAt) {
+              this.updatedAt = data.updatedAt;
+              try {
+                const cur = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+                cur.updatedAt = data.updatedAt;
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(cur));
+              } catch (e) {}
+            }
+          })
+          .catch(() => {});
+        }, 100);
+      }
+    } catch (e) {
+      console.warn('LocalStorage save error:', e);
+    }
+  }
+
+  async syncWithServer(force = false) {
+    if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+    try {
+      // 1. ตรวจสอบเวอร์ชันผ่าน endpoint check ก่อน เพื่อความรวดเร็วและประหยัด bandwidth
+      const checkRes = await fetch('/api/state?check=1');
+      if (!checkRes.ok) return;
+      const checkData = await checkRes.json();
+      const serverUpdatedAt = Number(checkData.updatedAt) || 0;
+      const localUpdatedAt = Number(this.updatedAt) || 0;
+
+      // ถ้าเซิร์ฟเวอร์ไม่ได้ใหม่กว่าอุปกรณ์นี้ และไม่ได้บังคับโหลด ก็ไม่ต้องดึงข้อมูลเต็ม
+      if (!force && serverUpdatedAt <= localUpdatedAt && localUpdatedAt > 0) {
+        return;
+      }
+
+      // 2. ดึงข้อมูลตารางเวอร์ชันล่าสุดจากเซิร์ฟเวอร์
+      const res = await fetch('/api/state');
+      if (!res.ok) return;
+      const serverState = await res.json();
+      if (!serverState || typeof serverState !== 'object') return;
+
+      const preservedUser = this.currentUser;
+
+      if (Array.isArray(serverState.rooms)) {
+        this.rooms = serverState.rooms;
+        this.rooms.forEach(r => {
+          const cfg = (REAL_EXAM_ROOM_CONFIGS || []).find(c => c.code === (r.roomCode || r.code || r.id));
+          if (cfg && cfg.blocks && r.blocks) {
+            let curCount = 0;
+            r.blocks.forEach(b => { if (b.columns) b.columns.forEach(col => curCount += col.length); });
+            if (curCount < cfg.capacity) {
+              const restoredBlocks = JSON.parse(JSON.stringify(cfg.blocks));
+              let curDesks = [];
+              r.blocks.forEach(b => { if (b.columns) b.columns.forEach(col => curDesks.push(...col)); });
+              let defDesks = [];
+              cfg.blocks.forEach(b => { if (b.columns) b.columns.forEach(col => defDesks.push(...col)); });
+              const addedDesks = curDesks.filter(d => !defDesks.includes(d));
+              if (addedDesks.length > 0) {
+                const lastBlock = restoredBlocks[restoredBlocks.length - 1];
+                lastBlock.columns[lastBlock.columns.length - 1].push(...addedDesks);
+              }
+              r.blocks = restoredBlocks;
+              r.capacity = defDesks.length + addedDesks.length;
+            }
+          }
+        });
+      }
+      if (Array.isArray(serverState.proctors)) this.proctors = serverState.proctors;
+      if (Array.isArray(serverState.sessions)) this.sessions = serverState.sessions;
+      if (Array.isArray(serverState.allocations)) this.allocations = serverState.allocations;
+      if (Array.isArray(serverState.unavailabilities)) this.unavailabilities = serverState.unavailabilities;
+      if (Array.isArray(serverState.assignments)) this.assignments = serverState.assignments;
+      if (Array.isArray(serverState.confirmedAssignments)) this.confirmedAssignments = serverState.confirmedAssignments;
+      if (Array.isArray(serverState.pendingSwaps)) this.pendingSwaps = serverState.pendingSwaps;
+      if (serverState.swapDocIssued !== undefined) this.swapDocIssued = serverState.swapDocIssued;
+      if (Array.isArray(serverState.swapDocHistory)) this.swapDocHistory = serverState.swapDocHistory;
+      if (serverState.hasUnconfirmedChanges !== undefined) this.hasUnconfirmedChanges = serverState.hasUnconfirmedChanges;
+      this.lastConfirmedAt = serverState.lastConfirmedAt || null;
+      if (serverState.currentStatus) this.currentStatus = serverState.currentStatus;
+      if (serverState.settings) this.settings = serverState.settings;
+      if (Array.isArray(serverState.versions)) this.versions = serverState.versions;
+      if (Array.isArray(serverState.examinees)) this.examinees = serverState.examinees;
+
+      this.updatedAt = Math.max(serverUpdatedAt, Number(serverState.updatedAt) || 0);
+
+      // คงสถานะผู้ใช้ที่ล็อกอินอยู่บนอุปกรณ์ปัจจุบัน
+      if (preservedUser) {
+        this.currentUser = preservedUser;
+      }
+
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            rooms: this.rooms,
+            proctors: this.proctors,
+            sessions: this.sessions,
+            allocations: this.allocations,
+            unavailabilities: this.unavailabilities,
+            assignments: this.assignments,
+            confirmedAssignments: this.confirmedAssignments,
+            pendingSwaps: this.pendingSwaps,
+            swapDocIssued: this.swapDocIssued,
+            swapDocHistory: (this.swapDocHistory || []).slice(0, 30),
+            hasUnconfirmedChanges: this.hasUnconfirmedChanges,
+            lastConfirmedAt: this.lastConfirmedAt,
+            settings: this.settings,
+            versions: this.versions,
+            auditLogs: this.auditLogs.slice(-200),
+            currentStatus: this.currentStatus,
+            currentUser: this.currentUser,
+            updatedAt: this.updatedAt
+          }));
+        } catch (e) {}
+      }
+
+      for (const listener of this.listeners) {
+        try {
+          listener(this);
+        } catch (e) {
+          console.error('State listener error during server sync:', e);
+        }
+      }
+    } catch (err) {
+      // โหมดออฟไลน์
+    }
+  }
+
+  // --- การจัดการสิทธิ์และผู้ใช้งาน (User & Role Authentication) ---
+  setCurrentUser(user) {
+    this.currentUser = user;
+    this.logAudit(user.id, 'AUTH_SWITCH', 'USER', user.id, null, user.name, `เข้าสู่ระบบเป็น: ${user.name} (${user.role})`);
+    this.persist();
+    this.notify();
+  }
+
+  isAdmin() {
+    return this.currentUser?.role === 'admin';
+  }
+
+  isTeacher() {
+    return this.currentUser?.role === 'teacher';
+  }
+
+  isProctor() {
+    return this.currentUser?.role === 'proctor' || this.currentUser?.role === 'teacher';
+  }
+
+  canEditEverything() {
+    return this.isAdmin();
+  }
+
+  canEditProctor(proctorId) {
+    return this.isAdmin() || (this.currentUser?.proctorId === proctorId);
+  }
+
+  getLoggedInProctor() {
+    if (!this.currentUser?.proctorId) return null;
+    return this.proctors.find(p => p.id === this.currentUser.proctorId) || null;
+  }
+
+  getAvailableAccounts() {
+    // รายชื่อบัญชีตัวอย่างที่สามารถสลับเพื่อทดสอบการใช้งานได้ทันที
+    const facultyProctors = this.proctors.filter(p => p.proctorType === 'faculty' && p.isActive).slice(0, 4);
+    const staffProctors = this.proctors.filter(p => p.proctorType === 'staff' && p.isActive).slice(0, 4);
+
+    return {
+      admin: {
+        id: 'admin',
+        role: 'admin',
+        name: 'ผู้ดูแลระบบ (Admin)',
+        proctorId: null,
+        description: 'สิทธิ์สูงสุด: แก้ไขตาราง เวลา ห้อง ผู้คุม กฎเกณฑ์ และจัดตารางอัตโนมัติ'
+      },
+      teachers: facultyProctors.map(p => ({
+        id: p.id,
+        role: 'teacher',
+        name: `อ.${p.firstName} ${p.lastName}`,
+        proctorId: p.id,
+        department: p.department,
+        description: `อาจารย์ (${p.department}) - ดูตารางสอน/สอบ แจ้งช่วงไม่ว่าง และแก้ไขข้อมูลส่วนตัว`
+      })),
+      staff: staffProctors.map(p => ({
+        id: p.id,
+        role: 'proctor',
+        name: `${p.firstName} ${p.lastName}`,
+        proctorId: p.id,
+        department: p.department,
+        description: `เจ้าหน้าที่คุมสอบ (${p.department}) - ดูตารางคุมสอบ แจ้งช่วงไม่ว่าง และแก้ไขข้อมูลส่วนตัว`
+      }))
+    };
+  }
+
+  // --- Snapshot สำหรับ Undo/Redo ---
+  pushUndo(actionDescription = 'แก้ไขตาราง') {
+    this.undoStack.push({
+      assignments: JSON.parse(JSON.stringify(this.assignments)),
+      pendingSwaps: JSON.parse(JSON.stringify(this.pendingSwaps || [])),
+      swapDocIssued: Boolean(this.swapDocIssued),
+      hasUnconfirmedChanges: Boolean(this.hasUnconfirmedChanges),
+      currentStatus: this.currentStatus,
+      description: actionDescription
+    });
+    if (this.undoStack.length > this.maxUndoDepth) {
+      this.undoStack.shift();
+    }
+    this.redoStack = []; // เคลียร์ redo เมื่อมีการเปลี่ยนแปลงใหม่
+  }
+
+  canUndo() {
+    return this.undoStack.length > 0;
+  }
+
+  canRedo() {
+    return this.redoStack.length > 0;
+  }
+
+  undo() {
+    if (!this.canUndo()) return false;
+    const previous = this.undoStack.pop();
+    this.redoStack.push({
+      assignments: JSON.parse(JSON.stringify(this.assignments)),
+      pendingSwaps: JSON.parse(JSON.stringify(this.pendingSwaps || [])),
+      swapDocIssued: Boolean(this.swapDocIssued),
+      hasUnconfirmedChanges: Boolean(this.hasUnconfirmedChanges),
+      currentStatus: this.currentStatus,
+      description: previous.description
+    });
+    this.assignments = previous.assignments;
+    if (Array.isArray(previous.pendingSwaps)) this.pendingSwaps = previous.pendingSwaps;
+    if (previous.swapDocIssued !== undefined) this.swapDocIssued = previous.swapDocIssued;
+    if (previous.hasUnconfirmedChanges !== undefined) this.hasUnconfirmedChanges = previous.hasUnconfirmedChanges;
+    if (previous.currentStatus) this.currentStatus = previous.currentStatus;
+    this.logAudit('ADMIN', 'UNDO', 'ASSIGNMENT', 'batch', null, `ย้อนกลับ: ${previous.description}`);
+    this.notify();
+    return true;
+  }
+
+  redo() {
+    if (!this.canRedo()) return false;
+    const next = this.redoStack.pop();
+    this.undoStack.push({
+      assignments: JSON.parse(JSON.stringify(this.assignments)),
+      pendingSwaps: JSON.parse(JSON.stringify(this.pendingSwaps || [])),
+      swapDocIssued: Boolean(this.swapDocIssued),
+      hasUnconfirmedChanges: Boolean(this.hasUnconfirmedChanges),
+      currentStatus: this.currentStatus,
+      description: next.description
+    });
+    this.assignments = next.assignments;
+    if (Array.isArray(next.pendingSwaps)) this.pendingSwaps = next.pendingSwaps;
+    if (next.swapDocIssued !== undefined) this.swapDocIssued = next.swapDocIssued;
+    if (next.hasUnconfirmedChanges !== undefined) this.hasUnconfirmedChanges = next.hasUnconfirmedChanges;
+    if (next.currentStatus) this.currentStatus = next.currentStatus;
+    this.logAudit('ADMIN', 'REDO', 'ASSIGNMENT', 'batch', null, `ทำซ้ำ: ${next.description}`);
+    this.notify();
+    return true;
+  }
+
+  // --- ระบบบันทึกการสลับ/เปลี่ยนตัว ออกใบเซ็นสลับ และยืนยันตารางขึ้นแดชบอร์ด ---
+  formatProctorDisplayName(proctorOrId) {
+    const p = typeof proctorOrId === 'string'
+      ? this.proctors.find(item => item.id === proctorOrId)
+      : proctorOrId;
+    if (!p) return proctorOrId || '-';
+    const title = p.academicTitle ? `${p.academicTitle} ` : '';
+    return `${title}${p.firstName || ''} ${p.lastName || ''}`.trim();
+  }
+
+  getRoomDisplayLabel(roomId, role = 'proctor') {
+    if (role === 'reserve' || !roomId) return 'กองอำนวยการ (สำรอง)';
+    const r = this.rooms.find(item => item.id === roomId);
+    if (!r) return roomId;
+    const code = r.roomCode || r.code || r.id;
+    return r.name ? `${code} (${r.name})` : code;
+  }
+
+  recordPendingSwap({
+    type = 'SWAP',
+    sessionId,
+    targetSessionId = null,
+    fromProctorId = null,
+    toProctorId = null,
+    fromRoomId = null,
+    toRoomId = null,
+    fromRole = 'proctor',
+    toRole = 'proctor',
+    reason = ''
+  }) {
+    const session = this.sessions.find(s => s.id === sessionId);
+    const targetSession = targetSessionId ? this.sessions.find(s => s.id === targetSessionId) : session;
+    const record = {
+      id: `SW_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      timestamp: new Date().toISOString(),
+      type,
+      sessionId: sessionId || '',
+      sessionName: session?.name || '',
+      sessionDate: session?.date || '',
+      sessionStartTime: session?.startTime || '',
+      sessionEndTime: session?.endTime || '',
+      targetSessionId: targetSessionId || sessionId || '',
+      targetSessionName: targetSession?.name || session?.name || '',
+      fromProctorId,
+      fromProctorName: this.formatProctorDisplayName(fromProctorId),
+      toProctorId,
+      toProctorName: toProctorId ? this.formatProctorDisplayName(toProctorId) : '',
+      fromRoomId,
+      fromRoomLabel: this.getRoomDisplayLabel(fromRoomId, fromRole),
+      toRoomId,
+      toRoomLabel: this.getRoomDisplayLabel(toRoomId, toRole),
+      fromRole,
+      toRole,
+      reason: reason || (type === 'SWAP' ? 'สลับหน้าที่กรรมการกำกับการสอบ (ลากวาง)' : (type === 'MOVE' ? 'ย้ายตำแหน่งห้องสอบ (ลากวาง)' : 'เปลี่ยนตัวผู้ปฏิบัติหน้าที่แทน'))
+    };
+    if (!Array.isArray(this.pendingSwaps)) this.pendingSwaps = [];
+    this.pendingSwaps.push(record);
+    this.swapDocIssued = false;
+    this.hasUnconfirmedChanges = true;
+    this.currentStatus = 'draft';
+    return record;
+  }
+
+  getNextSwapDocNumber() {
+    const thaiYear = new Date().getFullYear() + 543;
+    const seq = String((this.swapDocHistory?.length || 0) + 1).padStart(3, '0');
+    return `บส. ${seq}/${thaiYear}`;
+  }
+
+  markSwapDocumentIssued(note = '') {
+    if (!this.pendingSwaps || this.pendingSwaps.length === 0) {
+      return { success: false, message: 'ไม่มีรายการสลับ/เปลี่ยนตัวที่ต้องออกใบเซ็น' };
+    }
+    const docNumber = this.getNextSwapDocNumber();
+    const doc = {
+      id: `DOC_${Date.now()}`,
+      docNumber,
+      issuedAt: new Date().toISOString(),
+      issuedByShort: 'ผศ.ดร.ณัฐพล แสนคำ',
+      issuedByFull: 'ผู้ช่วยศาสตราจารย์ ดร.ณัฐพล แสนคำ',
+      note: (note || '').trim() || 'เพื่อความเหมาะสมและความเรียบร้อยในการปฏิบัติหน้าที่กรรมการกำกับการสอบ',
+      swaps: JSON.parse(JSON.stringify(this.pendingSwaps))
+    };
+    if (!Array.isArray(this.swapDocHistory)) this.swapDocHistory = [];
+    this.swapDocHistory.unshift(doc);
+    this.swapDocHistory = this.swapDocHistory.slice(0, 30);
+    this.swapDocIssued = true;
+    this.currentStatus = 'review';
+    this.logAudit(
+      'ADMIN',
+      'ISSUE_SWAP_DOC',
+      'DOCUMENT',
+      docNumber,
+      null,
+      { docNumber, count: doc.swaps.length, issuedBy: doc.issuedByFull },
+      `ออกใบเซ็นสลับ/เปลี่ยนตัวผู้คุมสอบ (${doc.swaps.length} รายการ) จาก ${doc.issuedByShort}`
+    );
+    this.notify();
+    return { success: true, doc };
+  }
+
+  confirmAndPublishSchedule(note = '') {
+    if (this.pendingSwaps && this.pendingSwaps.length > 0 && !this.swapDocIssued) {
+      return {
+        success: false,
+        requireSwapDoc: true,
+        message: 'กรุณาออกใบเซ็นสลับ/เปลี่ยนตัวผู้คุมสอบ (จาก ผศ.ดร.ณัฐพล แสนคำ) ส่งตรวจก่อน จึงจะสามารถกดยืนยันตารางได้'
+      };
+    }
+
+    const swapsConfirmedCount = this.pendingSwaps ? this.pendingSwaps.length : 0;
+    const latestDocNum = (swapsConfirmedCount > 0 && this.swapDocHistory?.length > 0)
+      ? this.swapDocHistory[0].docNumber
+      : null;
+
+    this.confirmedAssignments = JSON.parse(JSON.stringify(this.assignments));
+    this.hasUnconfirmedChanges = false;
+    this.currentStatus = 'published';
+    this.lastConfirmedAt = new Date().toISOString();
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+
+    const versionNumber = this.versions.length + 1;
+    const versionNote = note
+      || (latestDocNum
+        ? `ยืนยันตารางสอบ (พร้อมใบเซ็นสลับ ${latestDocNum} จำนวน ${swapsConfirmedCount} รายการ)`
+        : `ยืนยันตารางสอบส่งขึ้นแดชบอร์ด (${this.confirmedAssignments.length} ตำแหน่ง)`);
+    this.versions.push({
+      id: `VER_${versionNumber}_${Date.now()}`,
+      versionNumber,
+      createdAt: this.lastConfirmedAt,
+      scheduleStatus: 'published',
+      note: versionNote,
+      assignments: JSON.parse(JSON.stringify(this.confirmedAssignments))
+    });
+
+    this.logAudit(
+      'ADMIN',
+      'CONFIRM_PUBLISH_SCHEDULE',
+      'SCHEDULE',
+      'published',
+      null,
+      { count: this.confirmedAssignments.length, swapsConfirmedCount, docNumber: latestDocNum },
+      versionNote
+    );
+    this.notify();
+    return {
+      success: true,
+      confirmedCount: this.confirmedAssignments.length,
+      swapsConfirmedCount,
+      docNumber: latestDocNum,
+      message: `ยืนยันตารางสอบสำเร็จ (${this.confirmedAssignments.length} ตำแหน่ง) — อัปเดตข้อมูลขึ้นหน้าแดชบอร์ดเรียบร้อยแล้ว`
+    };
+  }
+
+  discardDraftChanges() {
+    this.pushUndo('ยกเลิกฉบับร่างและคืนค่าตารางที่ยืนยันล่าสุด');
+    this.assignments = JSON.parse(JSON.stringify(this.confirmedAssignments || []));
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+    this.hasUnconfirmedChanges = false;
+    this.currentStatus = this.confirmedAssignments.length > 0 ? 'published' : 'draft';
+    this.logAudit('ADMIN', 'DISCARD_DRAFT', 'SCHEDULE', 'draft', null, { restoredCount: this.assignments.length }, 'ยกเลิกการแก้ไขฉบับร่างและคืนค่าตารางที่ยืนยันล่าสุด');
+    this.notify();
+    return { success: true };
+  }
+
+  // เอาใบสลับตัวออกทีละรายการ (กรณีทดสอบหรือสลับผิด)
+  removePendingSwap(swapId) {
+    if (!Array.isArray(this.pendingSwaps)) return { success: false, message: 'ไม่พบรายการใบสลับตัว' };
+    const idx = this.pendingSwaps.findIndex(s => s.id === swapId);
+    if (idx < 0) return { success: false, message: 'ไม่พบรายการที่ต้องการเอาออก' };
+
+    this.pushUndo('เอารายการออกจากใบสลับตัว');
+    const removed = this.pendingSwaps.splice(idx, 1)[0];
+    this.swapDocIssued = false;
+    if (this.pendingSwaps.length === 0 && this.currentStatus === 'review') {
+      this.currentStatus = 'draft';
+    }
+    this.logAudit('ADMIN', 'REMOVE_PENDING_SWAP', 'DOCUMENT', swapId, removed, null, 'เอารายการออกจากใบเซ็นสลับตัว (ทดสอบ/แก้ไข)');
+    this.notify();
+    return { success: true, remaining: this.pendingSwaps.length, removed };
+  }
+
+  // ล้างรายการใบสลับตัวทั้งหมด (ปลดล็อกกรณีทดสอบหรือสลับผิด)
+  clearPendingSwaps(alsoRemoveUnconfirmedIssuedDoc = true) {
+    const count = (this.pendingSwaps || []).length;
+    if (count === 0 && !this.swapDocIssued) {
+      return { success: false, message: 'ไม่มีรายการใบสลับตัวที่ค้างอยู่' };
+    }
+
+    this.pushUndo(`ล้างใบสลับตัวทั้งหมด (${count} รายการ)`);
+    if (alsoRemoveUnconfirmedIssuedDoc && this.swapDocIssued && Array.isArray(this.swapDocHistory) && this.swapDocHistory.length > 0) {
+      this.swapDocHistory.shift();
+    }
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+    if (this.currentStatus === 'review') {
+      this.currentStatus = 'draft';
+    }
+    this.logAudit('ADMIN', 'CLEAR_PENDING_SWAPS', 'DOCUMENT', 'all', count, 0, 'ล้างรายการใบสลับตัวทั้งหมด (กรณีทดสอบ/สลับผิด)');
+    this.notify();
+    return { success: true, clearedCount: count };
+  }
+
+  // ลบเอกสารใบเซ็นสลับที่ออกไปแล้วออกจากประวัติ (กรณีทดสอบ)
+  deleteSwapDocHistory(docId) {
+    if (!Array.isArray(this.swapDocHistory)) return { success: false, message: 'ไม่พบประวัติเอกสาร' };
+    const idx = this.swapDocHistory.findIndex(d => d.id === docId);
+    if (idx < 0) return { success: false, message: 'ไม่พบเอกสารที่ต้องการลบ' };
+
+    const removed = this.swapDocHistory.splice(idx, 1)[0];
+    if (idx === 0 && this.pendingSwaps && this.pendingSwaps.length > 0) {
+      this.swapDocIssued = false;
+    }
+    this.logAudit('ADMIN', 'DELETE_SWAP_DOC_HISTORY', 'DOCUMENT', removed.docNumber || docId, removed, null, `ลบเอกสารใบเซ็นสลับ ${removed.docNumber || ''} ออกจากประวัติ`);
+    this.notify();
+    return { success: true, removed, remaining: this.swapDocHistory.length };
+  }
+
+  // ล้างประวัติเอกสารใบเซ็นสลับทั้งหมด
+  clearSwapDocHistory() {
+    const count = (this.swapDocHistory || []).length;
+    if (count === 0) return { success: false, message: 'ไม่มีประวัติเอกสารให้ล้าง' };
+    this.swapDocHistory = [];
+    if (this.pendingSwaps && this.pendingSwaps.length > 0) {
+      this.swapDocIssued = false;
+    }
+    this.logAudit('ADMIN', 'CLEAR_SWAP_DOC_HISTORY', 'DOCUMENT', 'all', count, 0, `ล้างประวัติเอกสารใบเซ็นสลับทั้งหมด (${count} ฉบับ)`);
+    this.notify();
+    return { success: true, clearedCount: count };
+  }
+
+  // --- บันทึก Audit Log (ข้อกำหนด 3.9 & 7.12) ---
+  logAudit(actor, action, entityType, entityId, beforeValue, afterValue, reason = '') {
+    const logItem = {
+      id: `LOG_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      timestamp: new Date().toISOString(),
+      actor,
+      action,
+      entityType,
+      entityId,
+      beforeValue,
+      afterValue,
+      reason
+    };
+    this.auditLogs.unshift(logItem);
+  }
+
+  // --- การจัดตารางอัตโนมัติ (Solver) พร้อมระบบแก้ปัญหาขาดแคลนผู้คุมอัตโนมัติ 1-Click ---
+  runAutoSchedule(onProgress) {
+    this.pushUndo('จัดตารางอัตโนมัติ');
+
+    let autoGeneratedNotice = false;
+
+    // หากมีผู้คุมน้อยกว่า 42 คน หรือไม่พอกับรอบสอบทั้งหมด สุ่มสร้างผู้คุม 52 คนให้ทันที
+    const activeProctors = this.proctors.filter(p => p.isActive);
+    if (activeProctors.length < 42) {
+      this.autoGenerateSufficientProctors(52, false);
+      autoGeneratedNotice = true;
+    }
+
+    // เก็บเฉพาะ locked assignments
+    const locked = this.assignments.filter(a => a.status === 'locked');
+
+    let result = solveSchedule({
+      allocations: this.allocations,
+      sessions: this.sessions,
+      proctors: this.proctors,
+      rooms: this.rooms,
+      unavailabilities: this.unavailabilities,
+      lockedAssignments: locked,
+      settings: this.settings,
+      onProgress
+    });
+
+    // หากยังขาดตำแหน่งเนื่องจากติดเงื่อนไขโควต้า ให้สุ่มเพิ่มผู้คุมเป็น 85 คนและรันใหม่อัตโนมัติทันที
+    if (!result.success && result.missingSlots > 0) {
+      this.autoGenerateSufficientProctors(85, false);
+      autoGeneratedNotice = true;
+
+      result = solveSchedule({
+        allocations: this.allocations,
+        sessions: this.sessions,
+        proctors: this.proctors,
+        rooms: this.rooms,
+        unavailabilities: this.unavailabilities,
+        lockedAssignments: locked,
+        settings: this.settings,
+        onProgress
+      });
+    }
+
+    result.autoGeneratedNotice = autoGeneratedNotice;
+
+    if (result.success) {
+      this.assignments = result.assignments;
+      this.currentStatus = 'draft';
+      this.hasUnconfirmedChanges = true;
+      this.pendingSwaps = [];
+      this.swapDocIssued = false;
+      this.logAudit('SYSTEM', 'AUTO_SCHEDULE', 'SCHEDULE', 'all', null, `จัดตารางสำเร็จ (${result.assignments.length} ตำแหน่ง ในเวลา ${result.durationMs}ms, คุณภาพ ${result.qualityScore}/100) — รอการยืนยัน`);
+      this.notify();
+    }
+
+    return result;
+  }
+
+  // --- สุ่มสร้างผู้คุมสอบให้เพียงพอกับสนามสอบ CBT อัตโนมัติ (80 คน) ---
+  autoGenerateSufficientProctors(count = 80, pushToUndo = true) {
+    if (pushToUndo) {
+      this.pushUndo(`สุ่มสร้างผู้คุมสอบ ${count} คน`);
+    }
+
+    const uniqueDates = new Set(this.sessions.map(s => s.date));
+    const dayCount = uniqueDates.size || 2;
+    const sessionsPerDay = Math.ceil(this.sessions.length / Math.max(dayCount, 1)) || 3;
+
+    const fresh = generateSeedData({
+      seed: Date.now(),
+      proctorCount: count,
+      dayCount,
+      sessionsPerDay,
+      roomCount: this.rooms.length || 10
+    });
+
+    this.proctors = fresh.proctors;
+    this.unavailabilities = fresh.unavailabilities;
+
+    // ล้างเฉพาะการจัดตำแหน่งที่ไม่ตรงกับ ID ผู้คุมชุดใหม่
+    const newProctorIds = new Set(this.proctors.map(p => p.id));
+    this.assignments = this.assignments.filter(a => newProctorIds.has(a.proctorId));
+
+    this.logAudit('ADMIN', 'AUTO_GENERATE_PROCTORS', 'PROCTORS', 'all', null, `สุ่มสร้างรายชื่ออาจารย์และบุคลากรผู้คุมสอบอัตโนมัติ ${count} ท่าน`);
+    this.notify();
+    return this.proctors.length;
+  }
+
+  // --- สุ่มเพิ่มผู้คุมสอบอีกชุดเข้าไปในระบบ (โดยไม่ลบคนเก่า) ---
+  addRandomProctors(count = 20) {
+    this.pushUndo(`สุ่มเพิ่มผู้คุมสอบ ${count} คน`);
+
+    const prng = new PRNG(Date.now());
+    const existingMaxId = this.proctors.reduce((max, p) => {
+      const num = parseInt(p.id.replace(/\D/g, ''), 10) || 0;
+      return Math.max(max, num);
+    }, 0);
+
+    const FIRST_NAMES = [
+      'กิตติศักดิ์', 'ขวัญชัย', 'จิราพร', 'ฉัตรชัย', 'ชลธิชา',
+      'ฐิติมา', 'ณัฐพงษ์', 'ดนัย', 'ทศพร', 'ธนากร',
+      'นภัสสร', 'ปิยะวัฒน์', 'พงศกร', 'ภัทรดนัย', 'มนัสวี',
+      'ยุวดี', 'รังสรรค์', 'ลลิตา', 'วรวิทย์', 'ศิริพร',
+      'สมศักดิ์', 'อนันต์', 'อารียา', 'เอกชัย', 'กมลชนก',
+      'จิรวัฒน์', 'ชนินทร์', 'ดารินทร์', 'ทรงพล', 'ธวัลรัตน์'
+    ];
+    const LAST_NAMES = [
+      'เจริญสุข', 'พัฒนาวงศ์', 'เลิศวิริยะ', 'สิริวัฒนา', 'มงคลรัตน์',
+      'ประเสริฐผล', 'จงบริบูรณ์', 'ทรัพย์มหาศาล', 'วิทยากร', 'รุ่งเรืองกิจ',
+      'ธนารักษ์', 'บุญญานุรักษ์', 'เกษมสุข', 'วัฒนเมธี', 'อัครเดชากร'
+    ];
+    const DEPARTMENTS = [
+      'คณะวิทยาศาสตร์และเทคโนโลยี', 'คณะวิศวกรรมศาสตร์', 'คณะบริหารธุรกิจและการบัญชี',
+      'คณะมนุษยศาสตร์และสังคมศาสตร์', 'คณะครุศาสตร์และศึกษาศาสตร์', 'ศูนย์คอมพิวเตอร์และอินเทอร์เน็ต',
+      'กองบริหารงานวิชาการและการสอบ', 'สำนักวิทยบริการและหอสมุด'
+    ];
+
+    const newProctors = [];
+    for (let i = 1; i <= count; i++) {
+      const idx = existingMaxId + i;
+      const proctorId = `P${String(idx).padStart(3, '0')}`;
+      const fName = prng.choice(FIRST_NAMES);
+      const lName = prng.choice(LAST_NAMES);
+      const isFaculty = prng.next() < 0.6;
+      const dept = prng.choice(DEPARTMENTS);
+      const level = isFaculty || prng.next() < 0.3 ? 'chief' : 'assistant';
+      const academicTitle = isFaculty ? prng.choice(['ผศ.ดร.', 'ผศ.', 'อาจารย์ ดร.', 'อาจารย์']) : 'นักวิชาการศึกษา';
+
+      newProctors.push({
+        id: proctorId,
+        firstName: fName,
+        lastName: lName,
+        academicTitle,
+        seniorityRank: isFaculty ? 8 : 4,
+        pool: prng.next() < 0.85 ? 'core' : 'reserve',
+        sessionPattern: 'FULL_DAY_PAIRED',
+        availableDates: [],
+        keepSameRoom: true,
+        proctorType: isFaculty ? 'faculty' : 'staff',
+        department: dept,
+        email: `proctor_${idx}@univ-exam.ac.th`,
+        phone: `08${prng.nextInt(10, 99)}-${prng.nextInt(100, 999)}-${prng.nextInt(1000, 9999)}`,
+        dailyQuota: 2,
+        projectQuota: 6,
+        maxHours: 21,
+        isActive: true,
+        level,
+      });
+    }
+
+    this.proctors.push(...newProctors);
+    this.logAudit('ADMIN', 'ADD_RANDOM_PROCTORS', 'PROCTORS', 'multiple', null, `สุ่มเพิ่มผู้คุมสอบอีก ${count} ท่าน (รวมเป็น ${this.proctors.length} ท่าน)`);
+    this.notify();
+    return this.proctors.length;
+  }
+
+  // --- สุ่มเลือกผู้คุมที่ผ่านเกณฑ์ทันที 1 ท่านใส่ลงในตำแหน่งที่เลือก (Auto-Pick Proctor for Slot) ---
+  autoPickProctorForSlot(sessionId, allocationId, roomId, role, currentAssignId) {
+    let candidates = this.getRecommendedSubstitutes(sessionId, allocationId, role, currentAssignId);
+    let allowed = candidates.filter(c => c.allowed);
+
+    // หากไม่มีผู้คุมว่าง ให้สุ่มเพิ่มผู้คุมใหม่ 5 คนทันที
+    if (allowed.length === 0) {
+      this.addRandomProctors(5);
+      candidates = this.getRecommendedSubstitutes(sessionId, allocationId, role, currentAssignId);
+      allowed = candidates.filter(c => c.allowed);
+    }
+
+    if (allowed.length > 0) {
+      const topPick = allowed[0];
+      this.assignProctorManually({
+        sessionId,
+        allocationId,
+        roomId,
+        role,
+        proctorId: topPick.proctor.id
+      });
+      return { success: true, proctor: topPick.proctor, reason: topPick.reason };
+    }
+
+    return { success: false, message: 'ไม่สามารถหาผู้คุมที่ผ่านเกณฑ์ได้' };
+  }
+
+  // --- การคำนวณจำนวนผู้คุมขั้นต่ำ (Min Proctor Calculator) ---
+  calculateMinProctors() {
+    return calculateMinimumProctors({
+      allocations: this.allocations,
+      sessions: this.sessions,
+      proctors: this.proctors,
+      rooms: this.rooms,
+      unavailabilities: this.unavailabilities,
+      settings: this.settings
+    });
+  }
+
+  // --- การแก้ด้วยมือ (Manual Override) ---
+  assignProctorManually({ sessionId, allocationId, roomId, proctorId, role, reason = '', doSwap = true }) {
+    this.pushUndo(`เปลี่ยนผู้คุมในห้อง ${roomId || 'สำรอง'}`);
+
+    // ค้นหาผู้คุมเดิมในตำแหน่งนี้
+    const existingInSlotIndex = this.assignments.findIndex(a => {
+      if (role === 'reserve') {
+        return a.sessionId === sessionId && a.allocationId === allocationId && a.role === 'reserve';
+      }
+      return a.allocationId === allocationId && a.role === role;
+    });
+
+    const previousProctorId = existingInSlotIndex >= 0 ? this.assignments[existingInSlotIndex].proctorId : null;
+
+    // ตรวจสอบว่า proctorId ใหม่ที่เลือกมา มีตำแหน่งอื่นในรอบเดียวกันนี้อยู่แล้วหรือไม่
+    const otherSlotIndex = this.assignments.findIndex(a => a.sessionId === sessionId && a.proctorId === proctorId);
+    const otherSlotSnapshot = otherSlotIndex >= 0 ? { ...this.assignments[otherSlotIndex] } : null;
+
+    if (otherSlotIndex >= 0) {
+      if (doSwap && previousProctorId) {
+        // สลับตัว! เอาคนเดิมไปใส่ตำแหน่งอื่นแทน
+        this.assignments[otherSlotIndex].proctorId = previousProctorId;
+        this.assignments[otherSlotIndex].status = 'confirmed';
+        this.assignments[otherSlotIndex].source = 'manual';
+        this.assignments[otherSlotIndex].reason = `สลับตัวกับ ${proctorId}`;
+      } else {
+        // นำออกจากตำแหน่งเดิม
+        this.assignments.splice(otherSlotIndex, 1);
+      }
+    }
+
+    // ลบการจัดเดิมในตำแหน่งนี้ออก (ถ้ามี)
+    const currentSlotAfterIndex = this.assignments.findIndex(a => {
+      if (role === 'reserve') {
+        return a.sessionId === sessionId && a.allocationId === allocationId && a.role === 'reserve';
+      }
+      return a.allocationId === allocationId && a.role === role;
+    });
+    if (currentSlotAfterIndex >= 0) {
+      this.assignments.splice(currentSlotAfterIndex, 1);
+    }
+
+    // สร้าง assignment ใหม่
+    const newAssignment = {
+      id: `assign_manual_${sessionId}_${proctorId}_${Date.now()}`,
+      allocationId: allocationId || `RESERVE_${sessionId}`,
+      sessionId,
+      roomId,
+      proctorId,
+      role,
+      status: 'confirmed',
+      source: 'manual',
+      reason: reason || 'ปรับเปลี่ยนด้วยตนเองโดยผู้ประสานงาน'
+    };
+
+    this.assignments.push(newAssignment);
+    if (previousProctorId && previousProctorId !== proctorId) {
+      if (otherSlotSnapshot && doSwap) {
+        this.recordPendingSwap({
+          type: 'SWAP',
+          sessionId,
+          targetSessionId: otherSlotSnapshot.sessionId,
+          fromProctorId: previousProctorId,
+          toProctorId: proctorId,
+          fromRoomId: roomId,
+          toRoomId: otherSlotSnapshot.roomId,
+          fromRole: role,
+          toRole: otherSlotSnapshot.role,
+          reason: reason || 'สลับตัวกรรมการกำกับการสอบ (เลือกเปลี่ยนตัว)'
+        });
+      } else {
+        this.recordPendingSwap({
+          type: 'REPLACE',
+          sessionId,
+          fromProctorId: previousProctorId,
+          toProctorId: proctorId,
+          fromRoomId: roomId,
+          toRoomId: roomId,
+          fromRole: role,
+          toRole: role,
+          reason: reason || 'เปลี่ยนตัวกรรมการกำกับการสอบ'
+        });
+      }
+    } else {
+      this.hasUnconfirmedChanges = true;
+      this.currentStatus = 'draft';
+    }
+    this.logAudit('ADMIN', 'MANUAL_EDIT', 'ASSIGNMENT', newAssignment.id, previousProctorId, newAssignment, reason);
+    this.notify();
+  }
+
+  // --- การลากวางเพื่อย้ายหรือสลับตัวผู้คุมสอบ (Drag & Drop Reassign / Swap) ---
+  dragAndDropReassign({
+    sourceAssignId,
+    targetSessionId,
+    targetAllocId,
+    targetRoomId,
+    targetRole,
+    targetOrderIndex = 1,
+    targetAssignId = null
+  }) {
+    const sourceAssign = this.assignments.find(a => a.id === sourceAssignId);
+    if (!sourceAssign) {
+      return { success: false, message: 'ไม่พบข้อมูลผู้คุมที่ถูกลาก' };
+    }
+
+    const proctor1 = this.proctors.find(p => p.id === sourceAssign.proctorId);
+    if (!proctor1) {
+      return { success: false, message: 'ไม่พบประวัติผู้คุมสอบ' };
+    }
+
+    const sessionMap = new Map(this.sessions.map(s => [s.id, s]));
+    const proctorMap = new Map(this.proctors.map(p => [p.id, p]));
+
+    // ตรวจสอบว่าช่องปลายทางมีผู้คุมอยู่แล้วหรือไม่
+    let targetAssign = null;
+    if (targetAssignId) {
+      targetAssign = this.assignments.find(a => a.id === targetAssignId);
+    } else {
+      targetAssign = this.assignments.find(a => {
+        if (targetRole === 'reserve') {
+          return a.sessionId === targetSessionId && a.allocationId === targetAllocId && a.role === 'reserve';
+        }
+        return a.allocationId === targetAllocId && a.role === targetRole && (a.orderIndex || (targetRole === 'chief' ? 1 : 2)) === targetOrderIndex;
+      });
+    }
+
+    // กรณีที่ 1: ลากมาช่องเดิมของตัวเอง
+    if (targetAssign && targetAssign.id === sourceAssign.id) {
+      return { success: true, message: 'ตำแหน่งเดิม' };
+    }
+
+    // กรณีที่ 2: สลับตัวผู้คุม (SWAP) เมื่อช่องปลายทางมีคนอยู่แล้ว
+    if (targetAssign) {
+      const proctor2 = this.proctors.find(p => p.id === targetAssign.proctorId);
+      if (!proctor2) {
+        return { success: false, message: 'ไม่พบข้อมูลผู้คุมในตำแหน่งปลายทาง' };
+      }
+
+      // ตรวจสอบเงื่อนไข proctor1 ในตำแหน่งปลายทาง
+      const assignmentsWithoutBoth = this.assignments.filter(a => a.id !== sourceAssign.id && a.id !== targetAssign.id);
+
+      const check1 = canProctorTakeSlot({
+        proctorId: proctor1.id,
+        sessionId: targetSessionId,
+        allocationId: targetAllocId,
+        role: targetRole,
+        currentAssignments: assignmentsWithoutBoth,
+        sessionMap,
+        proctorMap,
+        unavailabilities: this.unavailabilities,
+        settings: this.settings
+      });
+
+      if (!check1.allowed) {
+        return {
+          success: false,
+          message: `ไม่สามารถสลับได้: ${proctor1.firstName} ${check1.reason}`
+        };
+      }
+
+      // ตรวจสอบเงื่อนไข proctor2 ในตำแหน่งต้นทาง
+      const check2 = canProctorTakeSlot({
+        proctorId: proctor2.id,
+        sessionId: sourceAssign.sessionId,
+        allocationId: sourceAssign.allocationId,
+        role: sourceAssign.role,
+        currentAssignments: [...assignmentsWithoutBoth, { ...targetAssign, proctorId: proctor1.id, allocationId: targetAllocId, sessionId: targetSessionId, role: targetRole }],
+        sessionMap,
+        proctorMap,
+        unavailabilities: this.unavailabilities,
+        settings: this.settings
+      });
+
+      if (!check2.allowed) {
+        return {
+          success: false,
+          message: `ไม่สามารถสลับได้: ${proctor2.firstName} ${check2.reason}`
+        };
+      }
+
+      // ผ่านเกณฑ์ทั้งคู่ ดำเนินการสลับตัว!
+      this.pushUndo(`สลับตัว ${proctor1.firstName} ⇄ ${proctor2.firstName}`);
+      const origSourceSessionId = sourceAssign.sessionId;
+      const origSourceRoomId = sourceAssign.roomId;
+      const origSourceRole = sourceAssign.role;
+      const origTargetSessionId = targetAssign.sessionId;
+      const origTargetRoomId = targetAssign.roomId;
+      const origTargetRole = targetAssign.role;
+
+      const tempP1 = sourceAssign.proctorId;
+      sourceAssign.proctorId = targetAssign.proctorId;
+      sourceAssign.status = 'confirmed';
+      sourceAssign.source = 'manual';
+      sourceAssign.reason = `สลับตัวกับ ${proctor1.firstName} (ลากวาง Swap)`;
+
+      targetAssign.proctorId = tempP1;
+      targetAssign.status = 'confirmed';
+      targetAssign.source = 'manual';
+      targetAssign.reason = `สลับตัวกับ ${proctor2.firstName} (ลากวาง Swap)`;
+
+      this.recordPendingSwap({
+        type: 'SWAP',
+        sessionId: origSourceSessionId,
+        targetSessionId: origTargetSessionId,
+        fromProctorId: proctor1.id,
+        toProctorId: proctor2.id,
+        fromRoomId: origSourceRoomId,
+        toRoomId: origTargetRoomId,
+        fromRole: origSourceRole,
+        toRole: origTargetRole,
+        reason: `ลากสลับตัวระหว่าง ${proctor1.firstName} กับ ${proctor2.firstName}`
+      });
+
+      this.logAudit('ADMIN', 'DRAG_SWAP', 'ASSIGNMENT', sourceAssign.id, null, { p1: proctor1.id, p2: proctor2.id }, `ลากสลับตัว ${proctor1.firstName} กับ ${proctor2.firstName}`);
+      this.notify();
+      return {
+        success: true,
+        requiresSwapDoc: true,
+        message: `สลับตัว ${proctor1.firstName} กับ ${proctor2.firstName} สำเร็จ — กรุณาออกใบเซ็นสลับส่งตรวจก่อนยืนยันตาราง`
+      };
+    }
+
+    // กรณีที่ 3: ย้ายไปยังช่องว่าง (MOVE)
+    const assignmentsWithoutSource = this.assignments.filter(a => a.id !== sourceAssign.id);
+    const checkMove = canProctorTakeSlot({
+      proctorId: proctor1.id,
+      sessionId: targetSessionId,
+      allocationId: targetAllocId,
+      role: targetRole,
+      currentAssignments: assignmentsWithoutSource,
+      sessionMap,
+      proctorMap,
+      unavailabilities: this.unavailabilities,
+      settings: this.settings
+    });
+
+    if (!checkMove.allowed) {
+      return {
+        success: false,
+        message: `ไม่สามารถย้ายได้: ${proctor1.firstName} ${checkMove.reason}`
+      };
+    }
+
+    // ดำเนินการย้าย
+    this.pushUndo(`ย้าย ${proctor1.firstName} ไปห้อง ${targetRoomId || 'สำรอง'}`);
+    const prevSessionId = sourceAssign.sessionId;
+    const prevRoomId = sourceAssign.roomId;
+    const prevRole = sourceAssign.role;
+
+    sourceAssign.sessionId = targetSessionId;
+    sourceAssign.allocationId = targetAllocId;
+    sourceAssign.roomId = targetRoomId;
+    sourceAssign.role = targetRole;
+    sourceAssign.orderIndex = targetOrderIndex;
+    sourceAssign.status = 'confirmed';
+    sourceAssign.source = 'manual';
+    sourceAssign.reason = `ลากย้ายตำแหน่งมายังห้อง ${targetRoomId || 'สำรอง'}`;
+
+    this.recordPendingSwap({
+      type: 'MOVE',
+      sessionId: prevSessionId,
+      targetSessionId,
+      fromProctorId: proctor1.id,
+      toProctorId: null,
+      fromRoomId: prevRoomId,
+      toRoomId: targetRoomId,
+      fromRole: prevRole,
+      toRole: targetRole,
+      reason: `ลากย้ายตำแหน่ง ${proctor1.firstName} ไปยัง ${this.getRoomDisplayLabel(targetRoomId, targetRole)}`
+    });
+
+    this.logAudit('ADMIN', 'DRAG_MOVE', 'ASSIGNMENT', sourceAssign.id, null, sourceAssign, `ลากย้าย ${proctor1.firstName} ไปรอบ ${targetSessionId} ห้อง ${targetRoomId}`);
+    this.notify();
+    return {
+      success: true,
+      requiresSwapDoc: true,
+      message: `ย้าย ${proctor1.firstName} ไปยังห้อง ${targetRoomId || 'สำรอง'} สำเร็จ — กรุณาออกใบเซ็นสลับส่งตรวจก่อนยืนยันตาราง`
+    };
+  }
+
+  // --- ปรับโควต้าและวันที่สะดวกของผู้คุมสอบแบบรวดเร็ว (Update Quota & Available Dates) ---
+  updateProctorQuotaAndDates(proctorId, { dailyQuota, projectQuota, availableDates, sessionPattern }) {
+    const p = this.proctors.find(item => item.id === proctorId);
+    if (!p) return false;
+
+    this.pushUndo(`ปรับโควต้า/วันที่ของ ${p.firstName}`);
+    if (dailyQuota !== undefined) p.dailyQuota = Number(dailyQuota);
+    if (projectQuota !== undefined) p.projectQuota = Number(projectQuota);
+    if (availableDates !== undefined) p.availableDates = availableDates;
+    if (sessionPattern !== undefined) p.sessionPattern = sessionPattern;
+
+    this.logAudit('ADMIN', 'UPDATE_QUOTA_DATES', 'PROCTOR', proctorId, null, { dailyQuota, projectQuota, availableDates, sessionPattern }, `ปรับโควต้าเป็น ${p.projectQuota} รอบ, วันสะดวก: ${p.availableDates?.join(', ') || 'ทุกวัน'}`);
+    this.notify();
+    return true;
+  }
+
+  // สลับ Pool (Core / Reserve) ของผู้คุมสอบรายคน
+  toggleProctorPool(proctorId) {
+    const p = this.proctors.find(item => item.id === proctorId);
+    if (!p) return false;
+    this.pushUndo(`เปลี่ยนกลุ่มของ ${p.firstName}`);
+    p.pool = p.pool === 'reserve' ? 'core' : 'reserve';
+    this.logAudit('ADMIN', 'TOGGLE_POOL', 'PROCTOR', proctorId, null, { pool: p.pool }, `เปลี่ยนกลุ่มบุคลากรเป็น ${p.pool === 'reserve' ? 'กลุ่มสำรอง (Reserve)' : 'กลุ่มหลัก (Core)'}`);
+    this.notify();
+    return true;
+  }
+
+  // ตั้งค่า Pool ของผู้คุมสอบทั้งหมดพร้อมกัน
+  setAllProctorsPool(poolType = 'core') {
+    this.pushUndo(`ตั้งบุคลากรทั้งหมดเป็น ${poolType}`);
+    this.proctors.forEach(p => {
+      p.pool = poolType;
+    });
+    this.logAudit('ADMIN', 'SET_ALL_POOL', 'PROCTOR', 'ALL', null, { pool: poolType }, `ตั้งบุคลากรทั้งหมดเป็น ${poolType === 'reserve' ? 'กลุ่มสำรอง' : 'กลุ่มหลัก'}`);
+    this.notify();
+  }
+
+  // ปรับโควต้าของผู้คุมสอบรายคน
+  updateProctorQuota(proctorId, quota) {
+    const p = this.proctors.find(item => item.id === proctorId);
+    if (!p) return false;
+    this.pushUndo(`ปรับโควต้าของ ${p.firstName}`);
+    p.projectQuota = Number(quota);
+    this.logAudit('ADMIN', 'UPDATE_QUOTA', 'PROCTOR', proctorId, null, { projectQuota: p.projectQuota }, `ปรับโควต้าสูงสุดเป็น ${p.projectQuota} รอบ`);
+    this.notify();
+    return true;
+  }
+
+  // ปรับ Session Pattern ของผู้คุมสอบ
+  updateProctorSessionPattern(proctorId, pattern) {
+    const p = this.proctors.find(item => item.id === proctorId);
+    if (!p) return false;
+    this.pushUndo(`ปรับรูปแบบคุมสอบของ ${p.firstName}`);
+    p.sessionPattern = pattern;
+    this.logAudit('ADMIN', 'UPDATE_PATTERN', 'PROCTOR', proctorId, null, { sessionPattern: pattern }, `ปรับรูปแบบคุมสอบเป็น ${pattern}`);
+    this.notify();
+    return true;
+  }
+
+  // สลับความสะดวกในแต่ละรอบการสอบ (Toggle Availability per Session)
+  toggleProctorSessionAvailability(proctorId, sessionId) {
+    const p = this.proctors.find(item => item.id === proctorId);
+    const session = this.sessions.find(s => s.id === sessionId);
+    if (!p || !session) return false;
+
+    this.pushUndo(`ปรับความสะดวกของ ${p.firstName}`);
+    const existingIdx = this.unavailabilities.findIndex(u => u.proctorId === proctorId && u.sessionId === sessionId);
+    if (existingIdx >= 0) {
+      this.unavailabilities.splice(existingIdx, 1);
+      this.logAudit('ADMIN', 'SET_AVAILABLE', 'PROCTOR', proctorId, null, { sessionId }, `แจ้งสะดวกในรอบ ${session.name || sessionId}`);
+    } else {
+      this.unavailabilities.push({
+        id: `U_${proctorId}_${sessionId}_${Date.now()}`,
+        proctorId: proctorId,
+        sessionId: sessionId,
+        startTime: session.startTime,
+        endTime: session.endTime,
+        reason: 'ติดภารกิจ/แจ้งไม่สะดวก'
+      });
+      this.logAudit('ADMIN', 'SET_UNAVAILABLE', 'PROCTOR', proctorId, null, { sessionId }, `แจ้งไม่สะดวกในรอบ ${session.name || sessionId}`);
+    }
+    this.notify();
+    return true;
+  }
+
+  // ตั้งค่าให้สะดวกทุกรอบการสอบ
+  setProctorAllSessionsAvailable(proctorId) {
+    const p = this.proctors.find(item => item.id === proctorId);
+    if (!p) return false;
+    this.pushUndo(`ตั้ง ${p.firstName} สะดวกทุกรอบ`);
+    this.unavailabilities = this.unavailabilities.filter(u => u.proctorId !== proctorId);
+    this.logAudit('ADMIN', 'SET_ALL_SESSIONS_AVAILABLE', 'PROCTOR', proctorId, null, null, `เปิดสถานะสะดวกทุกรอบ`);
+    this.notify();
+  }
+
+  // จำลองข้อมูลโควต้าและเงื่อนไขเริ่มต้น (Preset Quota & Conditions)
+  presetDefaultQuotas() {
+    this.pushUndo('จำลองข้อมูลโควต้าและเงื่อนไข');
+    this.proctors.forEach((p, idx) => {
+      p.pool = idx < 45 ? 'core' : 'reserve';
+      p.projectQuota = p.proctorType === 'faculty' ? 4 : 2;
+      p.sessionPattern = idx % 3 === 0 ? 'FULL_DAY_PAIRED' : (idx % 3 === 1 ? 'SINGLE_PER_DAY' : 'ANY');
+    });
+    this.logAudit('ADMIN', 'PRESET_QUOTAS', 'SYSTEM', 'ALL', null, null, 'จำลองโควต้าและเงื่อนไขเริ่มต้น (อาจารย์ 4 รอบ, เจ้าหน้าที่ 2 รอบ)');
+    this.notify();
+  }
+
+  // รีเซ็ตโควต้าและเงื่อนไขทั้งหมด
+  resetAllProctorQuotas() {
+    this.pushUndo('รีเซ็ตโควต้าทั้งหมด');
+    this.proctors.forEach(p => {
+      p.pool = 'core';
+      p.projectQuota = 3;
+      p.sessionPattern = 'ANY';
+    });
+    this.logAudit('ADMIN', 'RESET_QUOTAS', 'SYSTEM', 'ALL', null, null, 'รีเซ็ตโควต้าทั้งหมดเป็น 3 รอบ และกลุ่มหลัก');
+    this.notify();
+  }
+
+  // ลบผู้คุมออกจากตำแหน่ง
+  removeAssignment(assignmentId) {
+    const idx = this.assignments.findIndex(a => a.id === assignmentId);
+    if (idx >= 0) {
+      this.pushUndo('ลบผู้คุมออกจากห้อง');
+      const removed = this.assignments.splice(idx, 1)[0];
+      this.hasUnconfirmedChanges = true;
+      this.currentStatus = 'draft';
+      this.logAudit('ADMIN', 'REMOVE_ASSIGNMENT', 'ASSIGNMENT', assignmentId, removed, null);
+      this.notify();
+    }
+  }
+
+  // สลับหรือล็อก (Toggle Lock)
+  toggleLockAssignment(assignmentId) {
+    const a = this.assignments.find(item => item.id === assignmentId);
+    if (a) {
+      this.pushUndo(`เปลี่ยนสถานะล็อก ${a.proctorId}`);
+      a.status = a.status === 'locked' ? 'confirmed' : 'locked';
+      this.hasUnconfirmedChanges = true;
+      this.logAudit('ADMIN', 'TOGGLE_LOCK', 'ASSIGNMENT', assignmentId, null, a.status);
+      this.notify();
+    }
+  }
+
+  // ล้างการจัดตารางทั้งหมด (Clear Schedule)
+  clearSchedule(clearLocked = false) {
+    this.pushUndo('ล้างตารางการจัดสอบทั้งหมด');
+    const beforeCount = this.assignments.length;
+    if (clearLocked) {
+      this.assignments = [];
+      this.confirmedAssignments = [];
+    } else {
+      this.assignments = this.assignments.filter(a => a.status === 'locked');
+      this.confirmedAssignments = (this.confirmedAssignments || []).filter(a => a.status === 'locked');
+    }
+    this.currentStatus = 'draft';
+    this.hasUnconfirmedChanges = false;
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+    this.lastConfirmedAt = null;
+    this.updatedAt = Date.now();
+    this.logAudit('ADMIN', 'CLEAR_SCHEDULE', 'SCHEDULE', 'all', beforeCount, this.assignments.length, 'ล้างผลการจัดตาราง');
+    this.notify();
+  }
+
+  // ล้างผู้คุมเฉพาะในรอบสอบที่ระบุ
+  clearSessionAssignments(sessionId) {
+    this.pushUndo(`ล้างผู้คุมในรอบ ${sessionId}`);
+    const beforeCount = this.assignments.length;
+    this.assignments = this.assignments.filter(a => a.sessionId !== sessionId);
+    this.confirmedAssignments = (this.confirmedAssignments || []).filter(a => a.sessionId !== sessionId);
+    this.hasUnconfirmedChanges = true;
+    this.currentStatus = 'draft';
+    this.updatedAt = Date.now();
+    this.logAudit('ADMIN', 'CLEAR_SESSION', 'SESSION', sessionId, beforeCount, this.assignments.length, `ล้างผู้คุมในรอบ ${sessionId}`);
+    this.notify();
+  }
+
+  // --- การจัดการข้อมูลหลัก (Master Data CRUD) ---
+  saveProctor(data) {
+    const isNew = !data.id || !this.proctors.some(p => p.id === data.id);
+    let id = data.id;
+    if (isNew && !id) {
+      const maxNum = this.proctors.reduce((max, p) => {
+        const num = parseInt(p.id.replace(/\D/g, ''), 10);
+        return isNaN(num) ? max : Math.max(max, num);
+      }, 0);
+      id = `P${String(maxNum + 1).padStart(3, '0')}`;
+    }
+
+    const idx = this.proctors.findIndex(p => p.id === id);
+    const existing = idx >= 0 ? this.proctors[idx] : null;
+
+    // หากผู้ใช้ทั่วไปแก้ไขข้อมูลตนเอง (ไม่ใช่ Admin) จะไม่อนุญาตให้แก้ไขสิทธิ์บริหารหรือลำดับอาวุโส (แต่ปรับโควต้าและความพร้อมของตนเองได้)
+    const isSelfEdit = !this.isAdmin() && this.currentUser?.proctorId === id;
+
+    const proctorObj = {
+      id,
+      academicTitle: data.academicTitle !== undefined ? data.academicTitle : (existing?.academicTitle || ''),
+      firstName: data.firstName || existing?.firstName || 'ไม่ระบุชื่อ',
+      lastName: data.lastName || existing?.lastName || '',
+      proctorType: isSelfEdit ? (existing?.proctorType || 'faculty') : (data.proctorType || 'faculty'),
+      level: isSelfEdit ? (existing?.level || 'assistant') : (data.level || 'assistant'),
+      seniorityRank: isSelfEdit ? (existing?.seniorityRank || 4) : (data.seniorityRank !== undefined ? Number(data.seniorityRank) : (existing?.seniorityRank || (data.proctorType === 'faculty' ? 7 : 4))),
+      department: data.department || existing?.department || 'ทั่วไป',
+      email: data.email || existing?.email || `${id.toLowerCase()}@bru.ac.th`,
+      phone: data.phone || existing?.phone || '081-000-0000',
+      dailyQuota: data.dailyQuota !== undefined ? Number(data.dailyQuota) : (existing?.dailyQuota ?? 2),
+      projectQuota: data.projectQuota !== undefined ? Number(data.projectQuota) : (existing?.projectQuota ?? 6),
+      maxHours: data.maxHours !== undefined ? Number(data.maxHours) : (existing?.maxHours ?? 18),
+      availableDates: data.availableDates !== undefined ? data.availableDates : (existing?.availableDates || []),
+      sessionPattern: data.sessionPattern || existing?.sessionPattern || 'FULL_DAY_PAIRED',
+      keepSameRoom: data.keepSameRoom !== undefined ? Boolean(data.keepSameRoom) : (existing?.keepSameRoom !== undefined ? existing.keepSameRoom : true),
+      pool: isSelfEdit ? (existing?.pool || 'core') : (data.pool || existing?.pool || 'core'),
+      isActive: data.isActive !== undefined ? Boolean(data.isActive) : (existing?.isActive !== false)
+    };
+
+    if (idx >= 0) {
+      const before = this.proctors[idx];
+      this.proctors[idx] = proctorObj;
+      this.logAudit(this.currentUser?.name || 'USER', 'UPDATE', 'PROCTOR', id, before, proctorObj, 'แก้ไขข้อมูลผู้คุมสอบ');
+    } else {
+      this.proctors.push(proctorObj);
+      this.logAudit('ADMIN', 'CREATE', 'PROCTOR', id, null, proctorObj, 'เพิ่มผู้คุมสอบใหม่');
+    }
+
+    // อัปเดตชื่อใน currentUser ทันทีหากเป็นการแก้ไขโปรไฟล์ตัวเอง
+    if (this.currentUser?.proctorId === id) {
+      this.currentUser.name = `${proctorObj.proctorType === 'faculty' ? 'อ.' : ''}${proctorObj.firstName} ${proctorObj.lastName}`;
+    }
+
+    this.notify();
+    return proctorObj;
+  }
+
+  deleteProctor(proctorId) {
+    const idx = this.proctors.findIndex(p => p.id === proctorId);
+    if (idx >= 0) {
+      const removed = this.proctors.splice(idx, 1)[0];
+      this.assignments = this.assignments.filter(a => a.proctorId !== proctorId);
+      this.unavailabilities = this.unavailabilities.filter(u => u.proctorId !== proctorId);
+      this.logAudit('ADMIN', 'DELETE', 'PROCTOR', proctorId, removed, null, 'ลบผู้คุมสอบออกจากระบบ');
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  saveRoom(data) {
+    const isNew = !data.id || !this.rooms.some(r => r.id === data.id);
+    let id = data.id;
+    if (isNew && !id) {
+      const maxNum = this.rooms.reduce((max, r) => {
+        const num = parseInt(r.id.replace(/\D/g, ''), 10);
+        return isNaN(num) ? max : Math.max(max, num);
+      }, 0);
+      id = `R${String(maxNum + 1).padStart(2, '0')}`;
+    }
+
+    const roomObj = {
+      id,
+      name: data.name || `ห้องปฏิบัติการคอมพิวเตอร์ LAB ${id}`,
+      building: data.building || 'อาคารปฏิบัติการ',
+      floor: Number(data.floor) || 1,
+      capacity: Number(data.capacity) || 35,
+      roomType: data.roomType || 'computer',
+      accessibleForDisabled: Boolean(data.accessibleForDisabled),
+      isActive: data.isActive !== false
+    };
+
+    const idx = this.rooms.findIndex(r => r.id === id);
+    if (idx >= 0) {
+      const before = this.rooms[idx];
+      this.rooms[idx] = roomObj;
+      this.logAudit('ADMIN', 'UPDATE', 'ROOM', id, before, roomObj, 'แก้ไขข้อมูลห้องสอบ');
+    } else {
+      this.rooms.push(roomObj);
+      this.logAudit('ADMIN', 'CREATE', 'ROOM', id, null, roomObj, 'เพิ่มห้องสอบใหม่');
+    }
+
+    this.notify();
+    return roomObj;
+  }
+
+  deleteRoom(roomId) {
+    const idx = this.rooms.findIndex(r => r.id === roomId);
+    if (idx >= 0) {
+      const removed = this.rooms.splice(idx, 1)[0];
+      const removedAllocIds = new Set(this.allocations.filter(a => a.roomId === roomId).map(a => a.id));
+      this.allocations = this.allocations.filter(a => a.roomId !== roomId);
+      this.assignments = this.assignments.filter(a => !removedAllocIds.has(a.allocationId));
+      this.logAudit('ADMIN', 'DELETE', 'ROOM', roomId, removed, null, 'ลบห้องสอบออกจากระบบ');
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  saveSession(data) {
+    const isNew = !data.id || !this.sessions.some(s => s.id === data.id);
+    let id = data.id;
+    if (isNew && !id) {
+      const maxNum = this.sessions.reduce((max, s) => {
+        const num = parseInt(s.id.replace(/\D/g, ''), 10);
+        return isNaN(num) ? max : Math.max(max, num);
+      }, 0);
+      id = `S${String(maxNum + 1).padStart(2, '0')}`;
+    }
+
+    const sessionObj = {
+      id,
+      name: data.name || `รอบการสอบ ${id}`,
+      date: data.date || '2026-10-24',
+      startTime: data.startTime || `${data.date || '2026-10-24'}T09:00:00+07:00`,
+      endTime: data.endTime || `${data.date || '2026-10-24'}T12:00:00+07:00`,
+      totalExaminees: Number(data.totalExaminees) || 0,
+      prepMinutes: Number(data.prepMinutes) || 30,
+      wrapMinutes: Number(data.wrapMinutes) || 15,
+      organization: data.organization || 'ศูนย์สอบมหาวิทยาลัย'
+    };
+
+    const idx = this.sessions.findIndex(s => s.id === id);
+    if (idx >= 0) {
+      const before = this.sessions[idx];
+      this.sessions[idx] = sessionObj;
+      this.logAudit('ADMIN', 'UPDATE', 'SESSION', id, before, sessionObj, 'แก้ไขรอบการสอบ');
+    } else {
+      this.sessions.push(sessionObj);
+      for (const r of this.rooms.filter(room => room.isActive)) {
+        this.allocations.push({
+          id: `A_${id}_${r.id}`,
+          sessionId: id,
+          roomId: r.id,
+          examineesInRoom: Math.min(r.capacity, 30),
+          specialNeeds: 'computer'
+        });
+      }
+      this.logAudit('ADMIN', 'CREATE', 'SESSION', id, null, sessionObj, 'เพิ่มรอบการสอบใหม่');
+    }
+
+    this.notify();
+    return sessionObj;
+  }
+
+  deleteSession(sessionId) {
+    const idx = this.sessions.findIndex(s => s.id === sessionId);
+    if (idx >= 0) {
+      const removed = this.sessions.splice(idx, 1)[0];
+      this.allocations = this.allocations.filter(a => a.sessionId !== sessionId);
+      this.assignments = this.assignments.filter(a => a.sessionId !== sessionId);
+      this.confirmedAssignments = (this.confirmedAssignments || []).filter(a => a.sessionId !== sessionId);
+      this.updatedAt = Date.now();
+      this.logAudit('ADMIN', 'DELETE', 'SESSION', sessionId, removed, null, 'ลบรอบการสอบออกจากระบบ');
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  // --- การจัดการห้องสอบประจำรอบ (Room Allocations) สำหรับ Admin ---
+  addRoomToSession(sessionId, roomId, examinees = 30) {
+    if (this.allocations.some(a => a.sessionId === sessionId && a.roomId === roomId)) {
+      return false; // มีห้องนี้ในรอบแล้ว
+    }
+    const room = this.rooms.find(r => r.id === roomId);
+    const capacity = room ? room.capacity : 35;
+    const newAlloc = {
+      id: `A_${sessionId}_${roomId}`,
+      sessionId,
+      roomId,
+      examineesInRoom: Math.min(Number(examinees) || capacity, capacity),
+      specialNeeds: 'computer'
+    };
+    this.pushUndo(`เพิ่มห้อง ${roomId} ในรอบ ${sessionId}`);
+    this.allocations.push(newAlloc);
+    this.logAudit('ADMIN', 'ADD_ROOM_SESSION', 'ALLOCATION', newAlloc.id, null, newAlloc, `เพิ่มห้อง ${roomId} ในรอบ ${sessionId}`);
+    this.notify();
+    return newAlloc;
+  }
+
+  removeRoomFromSession(allocationId) {
+    const idx = this.allocations.findIndex(a => a.id === allocationId);
+    if (idx >= 0) {
+      this.pushUndo('ถอดห้องสอบออกจากรอบ');
+      const removed = this.allocations.splice(idx, 1)[0];
+      this.assignments = this.assignments.filter(a => a.allocationId !== allocationId);
+      this.logAudit('ADMIN', 'REMOVE_ROOM_SESSION', 'ALLOCATION', allocationId, removed, null, 'ถอดห้องออกจากรอบการสอบ');
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  updateAllocation(allocationId, { examineesInRoom, roomId }) {
+    const alloc = this.allocations.find(a => a.id === allocationId);
+    if (alloc) {
+      this.pushUndo('แก้ไขข้อมูลห้องสอบในรอบ');
+      if (examineesInRoom !== undefined) {
+        alloc.examineesInRoom = Number(examineesInRoom);
+      }
+      if (roomId && roomId !== alloc.roomId) {
+        alloc.roomId = roomId;
+        this.assignments.filter(a => a.allocationId === allocationId).forEach(a => a.roomId = roomId);
+      }
+      this.logAudit('ADMIN', 'UPDATE_ALLOCATION', 'ALLOCATION', allocationId, null, alloc, 'แก้ไขจำนวนผู้เข้าสอบหรือห้อง');
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  saveUnavailability(data) {
+    const isNew = !data.id || !this.unavailabilities.some(u => u.id === data.id);
+    const id = data.id || `U_${Date.now()}`;
+    const unavailObj = {
+      id,
+      proctorId: data.proctorId,
+      startTime: data.startTime,
+      endTime: data.endTime,
+      reason: data.reason || ''
+    };
+
+    const idx = this.unavailabilities.findIndex(u => u.id === id);
+    if (idx >= 0) {
+      const before = this.unavailabilities[idx];
+      this.unavailabilities[idx] = unavailObj;
+      this.logAudit('ADMIN', 'UPDATE', 'UNAVAILABILITY', id, before, unavailObj, 'แก้ไขช่วงเวลาไม่ว่าง');
+    } else {
+      this.unavailabilities.push(unavailObj);
+      this.logAudit('ADMIN', 'CREATE', 'UNAVAILABILITY', id, null, unavailObj, 'เพิ่มช่วงเวลาไม่ว่าง');
+    }
+
+    this.notify();
+    return unavailObj;
+  }
+
+  deleteUnavailability(unavailId) {
+    const idx = this.unavailabilities.findIndex(u => u.id === unavailId);
+    if (idx >= 0) {
+      const removed = this.unavailabilities.splice(idx, 1)[0];
+      this.logAudit('ADMIN', 'DELETE', 'UNAVAILABILITY', unavailId, removed, null, 'ลบช่วงเวลาไม่ว่าง');
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  // --- การจัดการข้อมูลผู้เข้าสอบ (Examinee Management CRUD & Auto Allocation) ---
+  saveExaminee(data) {
+    if (!data) return null;
+    const isNew = !data.id || !this.examinees.some(e => e.id === data.id);
+    let id = data.id;
+    if (isNew && !id) {
+      const maxNum = this.examinees.reduce((max, e) => {
+        const num = parseInt(String(e.id).replace(/\D/g, ''), 10);
+        return isNaN(num) ? max : Math.max(max, num);
+      }, 69011234000);
+      id = String(maxNum + 1);
+    }
+
+    // Resolve room details
+    let room = null;
+    if (data.roomId) {
+      room = this.rooms.find(r => r.id === data.roomId || r.roomCode === data.roomId || r.code === data.roomId);
+    } else if (data.roomCode) {
+      room = this.rooms.find(r => r.roomCode === data.roomCode || r.code === data.roomCode || r.id === data.roomCode);
+    }
+    const roomId = room ? room.id : (data.roomId || '');
+    const roomCode = room ? (room.roomCode || room.code || '') : (data.roomCode || '');
+    const roomName = room ? (room.officialName ? `ห้อง ${room.roomCode || room.code} (${room.officialName})` : room.name) : (data.roomName || '');
+    const floor = room ? room.floor : (data.floor ? Number(data.floor) : 1);
+
+    // Resolve session
+    const session = this.sessions.find(s => s.id === data.sessionId);
+    const sessionName = session ? session.name : (data.sessionName || '');
+
+    const examineeObj = {
+      id: String(id),
+      citizenId: data.citizenId || '',
+      title: data.title || 'นาย',
+      firstName: data.firstName || '',
+      lastName: data.lastName || '',
+      faculty: data.faculty || 'คณะวิทยาศาสตร์',
+      major: data.major || 'สาขาวิชาวิทยาการคอมพิวเตอร์',
+      sessionId: data.sessionId || (this.sessions[0]?.id || 's1'),
+      sessionName,
+      subjectCode: data.subjectCode || 'CBT-101',
+      subjectName: data.subjectName || 'การทดสอบความรู้ความสามารถทั่วไปทางคอมพิวเตอร์ (CBT Exam)',
+      roomId,
+      roomCode,
+      roomName,
+      floor,
+      seatNumber: data.seatNumber !== undefined && data.seatNumber !== '' && data.seatNumber !== null ? Number(data.seatNumber) : null,
+      seatLabel: data.seatLabel || (data.seatNumber ? `ที่นั่ง ${data.seatNumber}` : 'ยังไม่ระบุที่นั่ง'),
+      status: data.status || 'confirmed',
+      specialNeeds: data.specialNeeds || '',
+      isMock: Boolean(data.isMock),
+      notes: data.notes || '',
+      updatedAt: new Date().toISOString()
+    };
+
+    const idx = this.examinees.findIndex(e => e.id === id);
+    if (idx >= 0) {
+      const before = this.examinees[idx];
+      this.examinees[idx] = examineeObj;
+      this.logAudit('ADMIN', 'UPDATE', 'EXAMINEE', id, before, examineeObj, `แก้ไขข้อมูลผู้เข้าสอบ ${examineeObj.firstName} ${examineeObj.lastName}`);
+    } else {
+      examineeObj.createdAt = new Date().toISOString();
+      this.examinees.push(examineeObj);
+      this.logAudit('ADMIN', 'CREATE', 'EXAMINEE', id, null, examineeObj, `เพิ่มผู้เข้าสอบใหม่ ${examineeObj.firstName} ${examineeObj.lastName}`);
+    }
+
+    this.notify();
+    return examineeObj;
+  }
+
+  deleteExaminee(examineeId) {
+    const idx = this.examinees.findIndex(e => e.id === examineeId);
+    if (idx >= 0) {
+      const removed = this.examinees.splice(idx, 1)[0];
+      this.logAudit('ADMIN', 'DELETE', 'EXAMINEE', examineeId, removed, null, `ลบผู้เข้าสอบ ${removed.firstName} ${removed.lastName} (${examineeId})`);
+      this.notify();
+      return true;
+    }
+    return false;
+  }
+
+  deleteExaminees(examineeIds) {
+    if (!Array.isArray(examineeIds) || examineeIds.length === 0) return 0;
+    const set = new Set(examineeIds.map(String));
+    const initialLen = this.examinees.length;
+    this.examinees = this.examinees.filter(e => !set.has(String(e.id)));
+    const deletedCount = initialLen - this.examinees.length;
+    if (deletedCount > 0) {
+      this.logAudit('ADMIN', 'BATCH_DELETE', 'EXAMINEE', null, null, null, `ลบผู้เข้าสอบหลายรายการจำนวน ${deletedCount} คน`);
+      this.notify();
+    }
+    return deletedCount;
+  }
+
+  clearSessionExaminees(sessionId) {
+    const initialLen = this.examinees.length;
+    this.examinees = this.examinees.filter(e => e.sessionId !== sessionId);
+    const count = initialLen - this.examinees.length;
+    this.logAudit('ADMIN', 'CLEAR_SESSION', 'EXAMINEE', sessionId, null, null, `ล้างข้อมูลผู้เข้าสอบรอบ ${sessionId} ทั้งหมด (${count} คน)`);
+    this.notify();
+    return count;
+  }
+
+  clearMockExaminees() {
+    const initialLen = this.examinees.length;
+    this.examinees = this.examinees.filter(e => !e.isMock);
+    const count = initialLen - this.examinees.length;
+    this.logAudit('ADMIN', 'CLEAR_MOCK', 'EXAMINEE', null, null, null, `ล้างข้อมูลผู้เข้าสอบจำลองทั้งหมด (${count} คน)`);
+    this.notify();
+    return count;
+  }
+
+  clearAllExaminees() {
+    const initialLen = (this.examinees || []).length;
+    this.examinees = [];
+    this.logAudit('ADMIN', 'CLEAR_ALL', 'EXAMINEE', null, null, null, `ล้างข้อมูลผู้เข้าสอบทั้งหมด (${initialLen} คน)`);
+    this.notify();
+    return initialLen;
+  }
+
+  generateMockExaminees(count = 20, sessionId = null, options = {}) {
+    const targetSessionId = sessionId || (this.sessions && this.sessions[0] ? this.sessions[0].id : 's1');
+    const targetSession = this.sessions.find(s => s.id === targetSessionId);
+    const sessionName = targetSession ? targetSession.name : 'รอบที่ 1';
+
+    const roomConfigs = (REAL_EXAM_ROOM_CONFIGS || []).slice(0, 10);
+    const seatSlots = [];
+    roomConfigs.forEach(rc => {
+      const room = this.rooms.find(r => (r.roomCode || r.code) === rc.code || r.roomNumber === rc.roomNumber) || {
+        id: `R${String(rc.roomNumber).padStart(2, '0')}`,
+        roomCode: rc.code,
+        officialName: rc.officialName,
+        name: rc.name,
+        floor: rc.floor
+      };
+      for (let s = rc.seatStart; s <= rc.seatEnd; s++) {
+        seatSlots.push({
+          roomId: room.id,
+          roomCode: rc.code,
+          roomName: rc.officialName ? `ห้อง ${rc.code} (${rc.officialName})` : room.name,
+          floor: rc.floor,
+          seatNumber: s
+        });
+      }
+    });
+
+    const thaiFirstNames = [
+      'กิตติศักดิ์', 'ชุติมา', 'ธีรภัทร', 'พรพิมล', 'ณัฐวุฒิ', 'ศุภิสรา', 'วรัญญู', 'พิชญา', 'ธนพล', 'ปิยะดา',
+      'อัครเดช', 'กัญญารัตน์', 'ศตวรรษ', 'อรทัย', 'ภูมินทร์', 'ชนิกานต์', 'พงศกร', 'กมลวรรณ', 'ชวลิต', 'รัตนาภรณ์',
+      'ปวเรศ', 'จิรภิญญา', 'ชลธวัช', 'สุดารัตน์', 'ธนทัต', 'วาสนา', 'ภาคภูมิ', 'เพ็ญนภา', 'กฤษฎา', 'สุชาดา',
+      'ปัญญาวุฒิ', 'มัทนี', 'จักรพันธ์', 'อังคณา', 'อดิศักดิ์', 'ชลธิชา', 'ธีระพงษ์', 'สุภาพร', 'อธิวัฒน์', 'ชญานิศ'
+    ];
+    const thaiLastNames = [
+      'เจริญผล', 'สายชล', 'รัตนโกสินทร์', 'ทองดี', 'วงศ์สุวรรณ', 'จันทร์กระจ่าง', 'ศรีสวัสดิ์', 'บุญชู', 'มีชัย', 'คงเกษม',
+      'อินทร์ศรี', 'สว่างวงศ์', 'แซ่ลิ้ม', 'ปัญญาวงศ์', 'สุขเกษม', 'มั่นคง', 'รัตนประเสริฐ', 'ดวงใจ', 'ทองใบ', 'ประเสริฐสุข',
+      'สมบูรณ์', 'วัฒนานนท์', 'กาญจนรักษ์', 'ทวีโชค', 'ชัยมงคล', 'ศิริพัฒน์', 'วงค์ไทย', 'พิทักษ์ธรรม', 'เพชรรัตน์', 'เกียรติสกุล'
+    ];
+    const examCategories = [
+      { 
+        name: 'สอบ ก.พ. (ระดับปริญญาตรี)', 
+        majors: ['สาขาวิชานิติศาสตร์', 'สาขาวิชาวิทยาการคอมพิวเตอร์', 'สาขาวิชาการบัญชีและการเงิน', 'สาขาวิชารัฐศาสตร์/รปศ.', 'สาขาวิชาเศรษฐศาสตร์'],
+        subjectCode: 'OCSC-CBT',
+        subjectName: 'การสอบวัดความรู้ความสามารถทั่วไป (ก.พ. ภาค ก CBT)'
+      },
+      { 
+        name: 'สอบคุรุสภา (วิชาชีพครู)', 
+        majors: ['กลุ่มวิชาคอมพิวเตอร์ศึกษา', 'กลุ่มวิชาภาษาไทย', 'กลุ่มวิชาคณิตศาสตร์', 'กลุ่มวิชาภาษาอังกฤษ', 'กลุ่มวิชาการศึกษาปฐมวัย', 'กลุ่มวิชาวิทยาศาสตร์ทั่วไป'],
+        subjectCode: 'KSP-CBT',
+        subjectName: 'การทดสอบและประเมินสมรรถนะทางวิชาชีพครู (คุรุสภา CBT)'
+      },
+      { 
+        name: 'สอบ ก.พ. (ระดับปริญญาโท)', 
+        majors: ['สาขาวิชารัฐประศาสนศาสตร์มหาบัณฑิต', 'สาขาวิชาบริหารธุรกิจมหาบัณฑิต', 'สาขาวิชานิติศาสตร์มหาบัณฑิต'],
+        subjectCode: 'OCSC-CBT',
+        subjectName: 'การสอบวัดความรู้ความสามารถทั่วไป (ก.พ. ภาค ก CBT)'
+      },
+      { 
+        name: 'สอบ ก.พ. (ระดับ ปวส./อนุปริญญา)', 
+        majors: ['สาขาวิชาการบัญชี', 'สาขาวิชาคอมพิวเตอร์ธุรกิจ', 'สาขาวิชาช่างไฟฟ้ากำลัง'],
+        subjectCode: 'OCSC-CBT',
+        subjectName: 'การสอบวัดความรู้ความสามารถทั่วไป (ก.พ. ภาค ก CBT)'
+      }
+    ];
+
+    let currentIdNum = 69011234000;
+    this.examinees.forEach(e => {
+      const n = parseInt(String(e.id).replace(/\D/g, ''), 10);
+      if (!isNaN(n) && n > currentIdNum) currentIdNum = n;
+    });
+
+    const newExaminees = [];
+    const actualCount = Math.min(Math.max(1, count), 520);
+
+    for (let i = 0; i < actualCount; i++) {
+      currentIdNum++;
+      const id = String(currentIdNum);
+      const isMale = (i % 2 === 0);
+      const title = isMale ? 'นาย' : 'นางสาว';
+      const fn = thaiFirstNames[i % thaiFirstNames.length];
+      const ln = thaiLastNames[(i * 3 + 7) % thaiLastNames.length];
+      const catObj = examCategories[i % examCategories.length];
+      const maj = catObj.majors[i % catObj.majors.length];
+
+      const citMid = String(100000000 + (i * 179 + 4321)).slice(-9);
+      const citizenId = `1-3199-${citMid.slice(0, 5)}-${citMid.slice(5, 7)}-${(i % 9) + 1}`;
+
+      const slot = seatSlots[i] || null;
+
+      newExaminees.push({
+        id,
+        citizenId,
+        title,
+        firstName: fn,
+        lastName: ln,
+        faculty: catObj.name,
+        major: maj,
+        sessionId: targetSessionId,
+        sessionName,
+        subjectCode: catObj.subjectCode,
+        subjectName: catObj.subjectName,
+        roomId: slot ? slot.roomId : '',
+        roomCode: slot ? slot.roomCode : '',
+        roomName: slot ? slot.roomName : '',
+        floor: slot ? slot.floor : 1,
+        seatNumber: slot ? slot.seatNumber : null,
+        seatLabel: slot ? `ที่นั่ง ${slot.seatNumber}` : 'ยังไม่ระบุที่นั่ง',
+        status: (i === 15 || i === 45) ? 'special_needs' : 'confirmed',
+        specialNeeds: (i === 15) ? 'ต้องการจอขยายและแสงสว่างเพิ่มเติม' : ((i === 45) ? 'เก้าอี้เพื่อสุขภาพ/ทางลาดวิวแชร์' : ''),
+        isMock: true,
+        notes: 'ชุดข้อมูลจำลองสำหรับทดสอบระบบ',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    this.examinees.push(...newExaminees);
+    this.logAudit('ADMIN', 'GENERATE_MOCK', 'EXAMINEE', targetSessionId, null, null, `สร้างข้อมูลผู้เข้าสอบจำลองจำนวน ${newExaminees.length} คน ในรอบ ${targetSessionId} (จัดที่นั่ง 1-${actualCount})`);
+    this.notify();
+    return newExaminees;
+  }
+
+  autoAllocateSeats(sessionId) {
+    const targetSessionId = sessionId || (this.sessions && this.sessions[0] ? this.sessions[0].id : 's1');
+    const examineesInSession = this.examinees.filter(e => e.sessionId === targetSessionId);
+    if (examineesInSession.length === 0) return 0;
+
+    const roomConfigs = (REAL_EXAM_ROOM_CONFIGS || []).slice(0, 10);
+    const seatSlots = [];
+    roomConfigs.forEach(rc => {
+      const room = this.rooms.find(r => (r.roomCode || r.code) === rc.code || r.roomNumber === rc.roomNumber) || {
+        id: `R${String(rc.roomNumber).padStart(2, '0')}`,
+        roomCode: rc.code,
+        officialName: rc.officialName,
+        name: rc.name,
+        floor: rc.floor
+      };
+      for (let s = rc.seatStart; s <= rc.seatEnd; s++) {
+        seatSlots.push({
+          roomId: room.id,
+          roomCode: rc.code,
+          roomName: rc.officialName ? `ห้อง ${rc.code} (${rc.officialName})` : room.name,
+          floor: rc.floor,
+          seatNumber: s
+        });
+      }
+    });
+
+    const occupiedSeats = new Set(
+      examineesInSession
+        .filter(e => e.seatNumber !== null && e.seatNumber !== undefined)
+        .map(e => `${e.roomCode}_${e.seatNumber}`)
+    );
+
+    let allocatedCount = 0;
+    let slotIdx = 0;
+    for (const ex of examineesInSession) {
+      if (ex.seatNumber === null || ex.seatNumber === undefined) {
+        while (slotIdx < seatSlots.length && occupiedSeats.has(`${seatSlots[slotIdx].roomCode}_${seatSlots[slotIdx].seatNumber}`)) {
+          slotIdx++;
+        }
+        if (slotIdx < seatSlots.length) {
+          const slot = seatSlots[slotIdx];
+          ex.roomId = slot.roomId;
+          ex.roomCode = slot.roomCode;
+          ex.roomName = slot.roomName;
+          ex.floor = slot.floor;
+          ex.seatNumber = slot.seatNumber;
+          ex.seatLabel = `ที่นั่ง ${slot.seatNumber}`;
+          ex.updatedAt = new Date().toISOString();
+          occupiedSeats.add(`${slot.roomCode}_${slot.seatNumber}`);
+          allocatedCount++;
+          slotIdx++;
+        }
+      }
+    }
+
+    if (allocatedCount > 0) {
+      this.logAudit('ADMIN', 'AUTO_ALLOCATE', 'EXAMINEE', targetSessionId, null, null, `จัดที่นั่งอัตโนมัติให้ผู้เข้าสอบรอบ ${targetSessionId} จำนวน ${allocatedCount} คน`);
+      this.notify();
+    }
+    return allocatedCount;
+  }
+
+  // --- แนะนำตัวแทน (Recommend Candidates) ---
+  getRecommendedSubstitutes(sessionId, allocationId, role, currentProctorId = null) {
+    const sessionMap = new Map(this.sessions.map(s => [s.id, s]));
+    const proctorMap = new Map(this.proctors.map(p => [p.id, p]));
+    const targetSession = sessionMap.get(sessionId);
+    const alloc = allocationId ? this.allocations.find(a => a.id === allocationId) : null;
+
+    // 1. ตรวจสอบผู้คุมสำรองในรอบเดียวกันก่อน (ตามข้อกำหนด 7.6: "เริ่มจากผู้คุมสำรอง")
+    const reserveAssignments = this.assignments.filter(a => a.sessionId === sessionId && a.role === 'reserve');
+    const reserveProctorIds = new Set(reserveAssignments.map(a => a.proctorId));
+
+    // นับรอบงานของผู้คุมปัจจุบัน
+    const counts = new Map();
+    for (const a of this.assignments) {
+      counts.set(a.proctorId, (counts.get(a.proctorId) || 0) + 1);
+    }
+
+    const candidates = [];
+    const busyCandidates = [];
+
+    for (const p of this.proctors) {
+      if (!p.isActive || p.id === currentProctorId) continue;
+
+      const check = canProctorTakeSlot({
+        proctorId: p.id,
+        sessionId,
+        allocationId,
+        role,
+        currentAssignments: this.assignments.filter(a => a.proctorId !== currentProctorId),
+        sessionMap,
+        proctorMap,
+        unavailabilities: this.unavailabilities,
+        settings: this.settings
+      });
+
+      // ตรวจสอบว่าในรอบเดียวกันนี้ คนนี้ถูกจัดในห้องไหนอยู่หรือไม่
+      const existingInSession = this.assignments.find(a => a.sessionId === sessionId && a.proctorId === p.id);
+      let assignedRoomName = '';
+      if (existingInSession) {
+        if (existingInSession.role === 'reserve') {
+          assignedRoomName = 'ผู้คุมสำรองประจำรอบ';
+        } else {
+          const r = this.rooms.find(rm => rm.id === existingInSession.roomId);
+          assignedRoomName = r ? r.name : (existingInSession.roomId || 'ห้องสอบอื่น');
+        }
+      }
+
+      if (check.allowed) {
+        const isReserve = reserveProctorIds.has(p.id);
+        const { totalScore } = calculateCandidateScore({
+          proctor: p,
+          session: targetSession,
+          allocation: alloc,
+          roomPartners: [],
+          proctorAssignmentCounts: counts,
+          proctorWorkedDates: new Map(),
+          proctorDateRooms: new Map(),
+          isDirectlyConsecutive: false,
+          totalSessions: this.sessions.length,
+          totalProctors: this.proctors.length,
+          settings: this.settings
+        });
+
+        const finalScore = isReserve ? totalScore + 100 : totalScore;
+
+        candidates.push({
+          proctor: p,
+          score: finalScore,
+          isReserve,
+          allowed: true,
+          workload: counts.get(p.id) || 0,
+          assignedInSameSession: existingInSession,
+          assignedRoomName,
+          reason: isReserve
+            ? `⭐ ผู้คุมสำรองประจำรอบนี้ (พร้อมเข้าแทนทันที)`
+            : `ผู้คุมว่าง (ภาระงาน ${counts.get(p.id) || 0} รอบ, คะแนน ${totalScore.toFixed(1)})`
+        });
+      } else {
+        busyCandidates.push({
+          proctor: p,
+          score: -100,
+          isReserve: false,
+          allowed: false,
+          workload: counts.get(p.id) || 0,
+          assignedInSameSession: existingInSession,
+          assignedRoomName,
+          blockedReason: check.reason || 'ไม่ผ่านเกณฑ์',
+          reason: existingInSession
+            ? `📌 กำลังคุมอยู่: ${assignedRoomName}`
+            : (check.reason || 'ไม่ผ่านเกณฑ์การจัดสรร')
+        });
+      }
+    }
+
+    // เรียงผู้คุมที่ว่างตามคะแนนความเหมาะสมสูงสุด
+    candidates.sort((a, b) => b.score - a.score);
+    // รวมผู้คุมที่ไม่ว่างไว้ต่อท้ายเพื่อให้เลือกสลับตัวหรือตรวจดูได้
+    return [...candidates, ...busyCandidates];
+  }
+
+  // --- ผู้คุมลากะทันหัน (Sudden Leave Handler - ข้อกำหนด 7.6) ---
+  handleSuddenLeave(proctorId, sessionId, replacementProctorId, reason = '') {
+    this.pushUndo(`แจ้งลากะทันหัน: ${proctorId}`);
+
+    // หา assignments ทั้งหมดของคนนี้ในรอบดังกล่าว
+    const targetAssigns = this.assignments.filter(a => a.sessionId === sessionId && a.proctorId === proctorId);
+
+    for (const target of targetAssigns) {
+      // บันทึก unavailability เพิ่มเติมอัตโนมัติ
+      const session = this.sessions.find(s => s.id === sessionId);
+      if (session) {
+        this.unavailabilities.push({
+          id: `U_SUDDEN_${Date.now()}`,
+          proctorId,
+          startTime: session.startTime,
+          endTime: session.endTime,
+          reason: `ลากะทันหัน: ${reason || 'เหตุฉุกเฉิน'}`
+        });
+      }
+
+      // เปลี่ยนตัวเป็นผู้คุมคนใหม่
+      target.proctorId = replacementProctorId;
+      target.source = 'manual';
+      target.reason = `เข้าปฏิบัติหน้าที่แทน ${proctorId} เนื่องจากลากะทันหัน (${reason || 'เหตุจำเป็น'})`;
+
+      this.recordPendingSwap({
+        type: 'REPLACE',
+        sessionId,
+        fromProctorId: proctorId,
+        toProctorId: replacementProctorId,
+        fromRoomId: target.roomId,
+        toRoomId: target.roomId,
+        fromRole: target.role,
+        toRole: target.role,
+        reason: `ลากะทันหัน: ${reason || 'เหตุจำเป็น'}`
+      });
+    }
+
+    this.logAudit('ADMIN', 'SUDDEN_LEAVE', 'PROCTOR', proctorId, proctorId, replacementProctorId, `ลากะทันหันในรอบ ${sessionId}: ${reason}`);
+    this.notify();
+  }
+
+  // --- การจัดการเวอร์ชัน (Versioning & Diff - ข้อกำหนด 7.9) ---
+  saveVersionSnapshot(note = '') {
+    const versionNumber = this.versions.length + 1;
+    const newVersion = {
+      id: `VER_${versionNumber}_${Date.now()}`,
+      versionNumber,
+      createdAt: new Date().toISOString(),
+      scheduleStatus: this.currentStatus,
+      note: note || `เวอร์ชันที่ ${versionNumber} (${this.currentStatus})`,
+      assignments: JSON.parse(JSON.stringify(this.assignments))
+    };
+    this.versions.push(newVersion);
+    this.logAudit('ADMIN', 'SAVE_VERSION', 'VERSION', newVersion.id, null, `บันทึกเวอร์ชัน ${versionNumber}: ${note}`);
+    this.notify();
+    return newVersion;
+  }
+
+  restoreVersion(versionId) {
+    const targetVer = this.versions.find(v => v.id === versionId);
+    if (!targetVer) return false;
+
+    this.pushUndo(`ย้อนกลับไปใช้เวอร์ชัน ${targetVer.versionNumber}`);
+    this.assignments = JSON.parse(JSON.stringify(targetVer.assignments));
+    this.currentStatus = 'draft';
+    this.hasUnconfirmedChanges = true;
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+    this.logAudit('ADMIN', 'RESTORE_VERSION', 'VERSION', versionId, null, `ย้อนกลับไปใช้เวอร์ชัน ${targetVer.versionNumber}`);
+    this.notify();
+    return true;
+  }
+
+  // เปรียบเทียบสองเวอร์ชัน (Diff)
+  compareVersions(versionIdA, versionIdB) {
+    const verA = versionIdA === 'current'
+      ? { versionNumber: 'ปัจจุบัน', assignments: this.assignments }
+      : this.versions.find(v => v.id === versionIdA);
+
+    const verB = versionIdB === 'current'
+      ? { versionNumber: 'ปัจจุบัน', assignments: this.assignments }
+      : this.versions.find(v => v.id === versionIdB);
+
+    if (!verA || !verB) return null;
+
+    const mapA = new Map();
+    for (const a of verA.assignments) {
+      const key = `${a.sessionId}_${a.roomId || 'reserve'}_${a.role}`;
+      mapA.set(key, a);
+    }
+
+    const mapB = new Map();
+    for (const b of verB.assignments) {
+      const key = `${b.sessionId}_${b.roomId || 'reserve'}_${b.role}`;
+      mapB.set(key, b);
+    }
+
+    const allKeys = new Set([...mapA.keys(), ...mapB.keys()]);
+    const differences = [];
+
+    for (const key of allKeys) {
+      const itemA = mapA.get(key);
+      const itemB = mapB.get(key);
+
+      if (!itemA && itemB) {
+        differences.push({
+          type: 'added',
+          slotKey: key,
+          before: null,
+          after: itemB
+        });
+      } else if (itemA && !itemB) {
+        differences.push({
+          type: 'removed',
+          slotKey: key,
+          before: itemA,
+          after: null
+        });
+      } else if (itemA && itemB && itemA.proctorId !== itemB.proctorId) {
+        differences.push({
+          type: 'changed',
+          slotKey: key,
+          before: itemA,
+          after: itemB
+        });
+      }
+    }
+
+    return {
+      versionA: verA.versionNumber,
+      versionB: verB.versionNumber,
+      differences
+    };
+  }
+
+  // เปลี่นสถานะตาราง (ร่าง -> รอตรวจ -> เผยแพร่)
+  updateScheduleStatus(newStatus, reason = '') {
+    const oldStatus = this.currentStatus;
+    this.currentStatus = newStatus;
+    this.logAudit('ADMIN', 'CHANGE_STATUS', 'SCHEDULE', 'status', oldStatus, newStatus, reason);
+    this.notify();
+  }
+
+  // สลับใช้ Preset ข้อมูลจำลอง (20 / 40 / 80 / stress)
+  loadPreset(presetKey) {
+    const preset = SEED_PRESETS[presetKey];
+    if (!preset) return;
+
+    this.pushUndo(`โหลดชุดข้อมูล ${preset.label}`);
+    const data = generateSeedData(preset.options);
+    this.rooms = data.rooms;
+    this.proctors = data.proctors;
+    this.sessions = data.sessions;
+    this.allocations = data.allocations;
+    this.unavailabilities = data.unavailabilities;
+    this.assignments = [];
+    this.confirmedAssignments = [];
+    this.pendingSwaps = [];
+    this.swapDocIssued = false;
+    this.hasUnconfirmedChanges = false;
+    this.lastConfirmedAt = null;
+    this.currentStatus = 'draft';
+
+    this.logAudit('ADMIN', 'LOAD_PRESET', 'DATA', presetKey, null, `โหลดชุดข้อมูล: ${preset.label}`);
+    this.notify();
+  }
+
+  // รีเซ็ตการตั้งค่าเป็นค่าเริ่มต้น
+  resetSettings() {
+    this.settings = cloneSettings(DEFAULT_SETTINGS);
+    this.logAudit('ADMIN', 'RESET_SETTINGS', 'SETTINGS', 'default', null, 'รีเซ็ตการตั้งค่าเป็นค่ามาตรฐาน');
+    this.notify();
+  }
+}
+
+// Global Singleton Instance
+export const appState = new AppState();

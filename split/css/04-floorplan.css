@@ -1,0 +1,1227 @@
+/* ==========================================================================
+   04-floorplan.css — Interactive Floor Plan, Building 17 SVG & Blueprint Styles
+   Extracted from index-standalone.html (lines 1581 to 2457)
+   ========================================================================== */
+
+/* ==========================================================================
+   🏢 ผังอาคาร 17 & สารบบห้องสอบ (Building 17 Floor Plan & Directory)
+   ========================================================================== */
+.building-navigator-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.floor-plan-view-container {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.floor-plan-map-card {
+  flex: 1;
+  min-width: 540px;
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.floor-directory-sidebar {
+  width: 310px;
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+  border-radius: var(--radius-md);
+  border: 2px solid #d97706;
+  box-shadow: 0 4px 12px rgba(217, 119, 6, 0.12);
+  color: #1e293b;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+[data-theme="dark"] .floor-directory-sidebar {
+  background: linear-gradient(135deg, #2d2616 0%, #1e1b13 100%);
+  border-color: var(--brand-gold);
+  color: #f8fafc;
+}
+
+.floor-directory-header {
+  background: #2563eb;
+  color: white;
+  padding: 10px 16px;
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.directory-room-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  font-size: 13px;
+  transition: all var(--transition-fast);
+  cursor: pointer;
+}
+
+.directory-room-item:hover {
+  background: rgba(255, 255, 255, 0.55);
+  transform: translateX(3px);
+}
+
+[data-theme="dark"] .directory-room-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.directory-room-item.is-exam-active {
+  background: rgba(37, 99, 235, 0.12);
+  font-weight: 700;
+  border-left: 4px solid #2563eb;
+}
+
+/* =============================================================================
+   Interactive Blueprint Floor Plan Styles (รูปทรงตามห้องจริง 1:1 ด้วย SVG Polygon)
+   ============================================================================= */
+
+.floor-plan-clean-wrapper {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  margin-top: 14px;
+}
+
+.full-width-card {
+  width: 100%;
+  max-width: 980px;
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  padding: 20px 24px;
+  position: relative;
+  box-shadow: var(--shadow-sm);
+}
+
+.blueprint-live-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(135deg, var(--primary-50), #f5f3ff);
+  border: 1.5px solid var(--primary-200);
+  color: var(--primary-800, #4c1d95);
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  min-height: 42px;
+}
+
+[data-theme="dark"] .blueprint-live-banner {
+  background: linear-gradient(135deg, rgba(59, 31, 84, 0.15), rgba(76, 29, 149, 0.25));
+  border-color: rgba(59, 31, 84, 0.4);
+  color: #ddd6fe;
+}
+
+.blueprint-live-banner .banner-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.blueprint-live-banner .banner-text {
+  line-height: 1.4;
+}
+
+.blueprint-image-container.clean-centered {
+  position: relative;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid var(--border-subtle);
+  background: #ffffff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+
+.blueprint-image {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* SVG Overlay ซ้อนบนผังอาคารตามพิกัด 1:1 */
+.blueprint-svg-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.blueprint-svg-room {
+  pointer-events: auto;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transform-origin: center;
+  vector-effect: non-scaling-stroke;
+}
+
+/* ห้องสอบ CBT (10 ห้อง): แสดงกรอบม่วงอ่อนเรียบหรู ไม่บังตัวหนังสือพิมพ์เขียว */
+.blueprint-svg-room.is-exam-room {
+  fill: rgba(59, 31, 84, 0.08);
+  stroke: rgba(59, 31, 84, 0.45);
+  stroke-width: 1.5px;
+  cursor: pointer;
+}
+
+/* Hover: ขยายและเรืองแสงสีม่วงทองตามรูปทรงห้องจริง */
+.blueprint-svg-room.is-exam-room:hover {
+  fill: rgba(59, 31, 84, 0.38);
+  stroke: #7c3aed;
+  stroke-width: 3px;
+  filter: drop-shadow(0 0 10px rgba(59, 31, 84, 0.75)) drop-shadow(0 4px 12px rgba(229, 168, 35, 0.3));
+}
+
+/* ห้องประชุม / หอประชุม */
+.blueprint-svg-room.is-hall-room {
+  fill: transparent;
+  stroke: transparent;
+  cursor: default;
+}
+
+.blueprint-svg-room.is-hall-room:hover {
+  fill: rgba(229, 168, 35, 0.25);
+  stroke: #d97706;
+  stroke-width: 2px;
+  filter: drop-shadow(0 2px 8px rgba(229, 168, 35, 0.4));
+}
+
+/* สิ่งอำนวยความสะดวก / ห้องน้ำ / อื่นๆ */
+.blueprint-svg-room.is-facility-room,
+.blueprint-svg-room.is-other-room {
+  fill: transparent;
+  stroke: transparent;
+  cursor: default;
+}
+
+.blueprint-svg-room.is-facility-room:hover,
+.blueprint-svg-room.is-other-room:hover {
+  fill: rgba(2, 132, 199, 0.22);
+  stroke: #0284c7;
+  stroke-width: 2px;
+  filter: drop-shadow(0 2px 8px rgba(2, 132, 199, 0.35));
+}
+
+.clean-legend {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 12px 18px;
+  background: var(--bg-surface-elevated, #f8fafc);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.swatch-exam {
+  background: rgba(59, 31, 84, 0.35);
+  border-color: #7c3aed;
+}
+
+.swatch-hall {
+  background: rgba(229, 168, 35, 0.25);
+  border-color: #d97706;
+}
+
+.swatch-facility {
+  background: rgba(2, 132, 199, 0.25);
+  border-color: #0284c7;
+}
+
+/* ผังอาคารเชิงสถาปัตยกรรม */
+.floor-layout-blueprint {
+  background: var(--bg-app);
+  border: 1px dashed var(--border-subtle);
+  border-radius: 8px;
+  padding: 16px;
+  position: relative;
+}
+
+.blueprint-wing-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.room-block-cell {
+  border: 1.5px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 72px;
+  position: relative;
+}
+
+.room-block-cell:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+  border-color: var(--primary-500);
+}
+
+.room-block-cell.exam-room {
+  border-color: var(--primary-500);
+  background: var(--primary-50);
+}
+
+[data-theme="dark"] .room-block-cell.exam-room {
+  background: rgba(59, 31, 84, 0.15);
+  border-color: var(--primary-400);
+}
+
+.room-block-cell.exam-room:hover {
+  border-color: var(--primary-600);
+  box-shadow: 0 4px 14px rgba(59, 31, 84, 0.25);
+}
+
+.room-block-cell.facility-room {
+  background: var(--bg-app);
+  border-style: dashed;
+  opacity: 0.85;
+}
+
+.room-block-cell .room-code-tag {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.room-block-cell .room-thai-name {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.room-block-cell .exam-badge-pill {
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--primary-500);
+  color: white;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+/* Modal Room Detail Tabs & Specs */
+.room-detail-subnav {
+  display: flex;
+  gap: 6px;
+  border-bottom: 2px solid var(--border-subtle);
+  padding-bottom: 8px;
+  margin-bottom: 16px;
+}
+
+.room-detail-subnav-btn {
+  padding: 7px 14px;
+  border-radius: 9999px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.room-detail-subnav-btn:hover {
+  background-color: rgba(59, 31, 84, 0.07);
+  border-color: rgba(59, 31, 84, 0.24);
+  color: var(--brand-purple);
+}
+
+.room-detail-subnav-btn.active {
+  background-color: rgba(59, 31, 84, 0.12);
+  border-color: rgba(59, 31, 84, 0.34);
+  color: var(--brand-purple);
+  font-weight: 700;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .room-detail-subnav-btn:hover {
+  background-color: rgba(195, 168, 227, 0.12);
+  color: #F4F2F8;
+}
+
+[data-theme="dark"] .room-detail-subnav-btn.active {
+  background-color: rgba(195, 168, 227, 0.18);
+  border-color: rgba(195, 168, 227, 0.42);
+  color: #F4F2F8;
+}
+
+.room-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.room-metric-box {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.room-metric-box .label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.room-metric-box .value {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text-main);
+}
+
+/* ==========================================================================
+   UI Redesign Phase 1: Modern Card System, Quick Actions, & Visual Hierarchy
+   ========================================================================== */
+
+/* Modernized KPI Metric Cards */
+.metrics-grid-modern {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.kpi-card-v2 {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  cursor: pointer;
+}
+
+.kpi-card-v2::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: transparent;
+  transition: background-color var(--transition-fast);
+}
+
+.kpi-card-v2:hover {
+  border-color: var(--brand-purple);
+  box-shadow: var(--shadow-md);
+}
+
+.kpi-card-v2:hover::before {
+  background: var(--brand-gold);
+}
+
+.kpi-card-v2.accent-primary::before {
+  background: var(--brand-purple);
+}
+
+.kpi-card-v2.accent-success::before {
+  background: var(--success-500);
+}
+
+.kpi-card-v2.accent-warning::before {
+  background: var(--warning-500);
+}
+
+.kpi-card-v2.accent-danger::before {
+  background: var(--danger-500);
+}
+
+.kpi-card-v2-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kpi-icon-circle {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  background: var(--primary-50);
+  color: var(--brand-purple);
+  border: 1px solid var(--primary-200);
+}
+
+.kpi-icon-circle.cbt,
+.kpi-icon-circle.proctors,
+.kpi-icon-circle.schedule,
+.kpi-icon-circle.rules {
+  background: var(--primary-50);
+  color: var(--brand-purple);
+  border-color: var(--primary-200);
+}
+
+.kpi-icon-circle.rules.error {
+  background: var(--danger-50);
+  color: var(--danger-500);
+  border-color: #FECACA;
+}
+
+.kpi-value-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.kpi-huge-number {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--text-main);
+  letter-spacing: -0.5px;
+}
+
+.kpi-unit-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.kpi-title-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.kpi-sub-detail {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+/* Quick Actions Hero Section (Clean Formal Surface) */
+.hero-action-panel {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-top: 3px solid var(--brand-purple);
+  border-radius: var(--radius-lg);
+  padding: 20px 24px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.hero-action-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.hero-action-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hero-action-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+.quick-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.quick-action-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+  user-select: none;
+}
+
+.quick-action-card:hover {
+  transform: translateY(-2px);
+  border-color: var(--primary-500);
+  box-shadow: var(--shadow-md);
+  background: var(--bg-surface-elevated);
+}
+
+.quick-action-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+  background: var(--primary-50);
+  color: var(--primary-600);
+}
+
+.quick-action-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.quick-action-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-action-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Modern View Toggle Pills (Soft Translucent Purple matching Session Filter Pills) */
+.view-toggle-group {
+  display: inline-flex;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  gap: 4px;
+}
+
+.view-toggle-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 5px 14px;
+  border-radius: var(--radius-full);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.view-toggle-btn:hover {
+  background-color: rgba(59, 31, 84, 0.07);
+  border-color: rgba(59, 31, 84, 0.2);
+  color: var(--brand-purple);
+}
+
+.view-toggle-btn.active {
+  background-color: rgba(59, 31, 84, 0.12);
+  border-color: rgba(59, 31, 84, 0.34);
+  color: var(--brand-purple);
+  font-weight: 700;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .view-toggle-btn:hover {
+  background-color: rgba(195, 168, 227, 0.12);
+  color: #F4F2F8;
+}
+
+[data-theme="dark"] .view-toggle-btn.active {
+  background-color: rgba(195, 168, 227, 0.18);
+  border-color: rgba(195, 168, 227, 0.42);
+  color: #F4F2F8;
+}
+
+/* Session Cards Grid (Dashboard: 1 Row per Session) */
+.session-cards-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding: 0;
+}
+
+.session-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+  position: relative;
+}
+
+.session-card:hover {
+  border-color: var(--primary-200);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.session-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.session-card-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-card-code {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--primary-600);
+  background: var(--primary-50);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  display: inline-block;
+  align-self: flex-start;
+  border: 1px solid var(--primary-100);
+}
+
+.session-card-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-main);
+  line-height: 1.3;
+}
+
+.session-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-badge-pill {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Proctor Progress Tracker inside Session Card */
+.session-proctor-meter {
+  background: var(--bg-surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-meter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+
+.session-meter-label {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.session-meter-status {
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.session-meter-status.complete {
+  color: var(--success-500);
+}
+
+.session-meter-status.incomplete {
+  color: var(--warning-600);
+}
+
+.session-progress-track {
+  height: 6px;
+  background: var(--border-subtle);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  position: relative;
+}
+
+.session-progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.3s ease;
+}
+
+.session-progress-fill.complete {
+  background: var(--success-500);
+}
+
+.session-progress-fill.incomplete {
+  background: var(--brand-gold);
+}
+
+.session-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+  gap: 8px;
+}
+
+/* Collapsible Compact Violations Bar */
+.violations-summary-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--warning-500);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.violations-summary-card.has-error {
+  border-color: var(--danger-500);
+}
+
+.violations-summary-header {
+  padding: 12px 18px;
+  background: var(--warning-50);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  user-select: none;
+}
+
+.violations-summary-card.has-error .violations-summary-header {
+  background: var(--danger-50);
+}
+
+.violations-badge-counter {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: var(--warning-500);
+  color: #ffffff;
+}
+
+.violations-summary-card.has-error .violations-badge-counter {
+  background: var(--danger-500);
+}
+
+
+
+/* --- Interactive Large Room Floorplan Seating Workstations --- */
+.interactive-seat-node {
+  width: 50px;
+  height: 48px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  padding: 3px 2px;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+  box-sizing: border-box;
+  background: #FFFFFF;
+  position: relative;
+}
+.interactive-seat-node:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+  z-index: 5;
+}
+.interactive-seat-node.seat-status-normal {
+  border: 1.5px solid #10B981;
+}
+.interactive-seat-node.seat-status-normal .seat-node-badge {
+  background: #DCFCE7;
+  color: #15803D;
+}
+.interactive-seat-node.seat-status-disabled {
+  border: 1.5px solid #EF4444;
+  background: #FEF2F2;
+}
+.interactive-seat-node.seat-status-disabled .seat-node-num {
+  text-decoration: line-through;
+  color: #DC2626;
+}
+.interactive-seat-node.seat-status-disabled .seat-node-badge {
+  background: #FEE2E2;
+  color: #991B1B;
+}
+.interactive-seat-node.seat-status-accessible {
+  border: 1.5px solid #3B82F6;
+  background: #EFF6FF;
+}
+.interactive-seat-node.seat-status-accessible .seat-node-badge {
+  background: #DBEAFE;
+  color: #1E40AF;
+}
+.interactive-seat-node.seat-is-selected {
+  outline: 2.5px solid #3B1F54 !important;
+  box-shadow: 0 0 0 4px rgba(59, 31, 84, 0.25) !important;
+}
+.seat-node-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 0 3px;
+  line-height: 1;
+}
+.seat-node-icon {
+  font-size: 11.5px;
+}
+.seat-node-badge {
+  font-size: 8.5px;
+  font-weight: 700;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+.seat-node-num {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: #1E293B;
+  line-height: 1.1;
+  font-family: 'Inter', 'Sarabun', sans-serif;
+}
+
+.interactive-seat-node[draggable="true"] {
+  cursor: grab;
+}
+.interactive-seat-node[draggable="true"]:active {
+  cursor: grabbing;
+}
+.interactive-seat-node.seat-is-dragging {
+  opacity: 0.45 !important;
+  border: 2px dashed #3B82F6 !important;
+  transform: scale(0.95);
+  box-shadow: 0 8px 16px rgba(59, 130, 246, 0.25) !important;
+}
+.interactive-seat-node.seat-drop-target {
+  outline: 2.5px solid #16A34A !important;
+  background: #DCFCE7 !important;
+  transform: scale(1.08);
+  box-shadow: 0 0 12px rgba(22, 163, 74, 0.45) !important;
+  z-index: 10;
+}
+.interactive-seat-col.col-drop-active {
+  background: rgba(220, 252, 231, 0.5) !important;
+  border-color: #16A34A !important;
+  box-shadow: inset 0 0 8px rgba(22, 163, 74, 0.2);
+}
+.seat-just-moved {
+  animation: seatPulse 0.45s ease;
+}
+@keyframes seatPulse {
+  0% { transform: scale(1.18); box-shadow: 0 0 14px rgba(22, 163, 74, 0.6); }
+  100% { transform: scale(1); }
+}
+.btn-col-add-seat {
+  transition: all 0.15s ease;
+}
+.btn-col-add-seat:hover {
+  background: #DCFCE7 !important;
+  border-color: #16A34A !important;
+  color: #15803D !important;
+  font-weight: 700 !important;
+  transform: translateY(-1px);
+}
+
+
+/* =============================================================================
+   🏢 Native Building 17 Floorplan SVG Styling (floorplan.html vector integration)
+   ============================================================================= */
+.building17-svg-container {
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  background: #ffffff;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--border-subtle, #e2e8f0);
+  padding: 12px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+[data-theme="dark"] .building17-svg-container {
+  background: #1e1b2e;
+  border-color: #3b2d54;
+}
+
+.building17-svg-container svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 72vh;
+}
+
+/* Structural Walls & Architectural Lines */
+.building17-svg-container .art {
+  fill: #1e293b;
+  pointer-events: none;
+}
+[data-theme="dark"] .building17-svg-container .art {
+  fill: #cbd5e1;
+}
+
+.building17-svg-container .art.lt {
+  fill: #94a3b8;
+}
+[data-theme="dark"] .building17-svg-container .art.lt {
+  fill: #64748b;
+}
+
+/* Room Polygons - General */
+.building17-svg-container .room {
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+/* Non-exam rooms: clean white/light gray background */
+.building17-svg-container .room.is-non-exam-room {
+  fill: #ffffff;
+  stroke: #cbd5e1;
+  stroke-width: 0.5;
+}
+[data-theme="dark"] .building17-svg-container .room.is-non-exam-room {
+  fill: #1a1625;
+  stroke: #475569;
+}
+.building17-svg-container .room.is-non-exam-room:hover {
+  fill: #f1f5f9;
+  stroke: #94a3b8;
+  stroke-width: 1.5;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+}
+[data-theme="dark"] .building17-svg-container .room.is-non-exam-room:hover {
+  fill: #2d2640;
+  stroke: #94a3b8;
+}
+
+/* Exam Rooms: distinguished Buriram purple glow & border */
+.building17-svg-container .room.is-exam-room {
+  fill: #f5f3ff;
+  stroke: #7c3aed;
+  stroke-width: 1.8;
+  filter: drop-shadow(0 1px 3px rgba(124, 58, 237, 0.2));
+}
+[data-theme="dark"] .building17-svg-container .room.is-exam-room {
+  fill: #2e1065;
+  stroke: #a78bfa;
+  stroke-width: 2;
+}
+.building17-svg-container .room.is-exam-room:hover {
+  fill: #ede9fe;
+  stroke: #5b21b6;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 4px 12px rgba(109, 40, 217, 0.45));
+}
+[data-theme="dark"] .building17-svg-container .room.is-exam-room:hover {
+  fill: #4c1d95;
+  stroke: #c4b5fd;
+}
+
+/* Room Text Labels */
+.building17-svg-container .rl {
+  font-family: 'Inter', 'Sarabun', sans-serif;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+  pointer-events: none;
+  fill: #1e293b;
+}
+[data-theme="dark"] .building17-svg-container .rl {
+  fill: #f8fafc;
+}
+
+/* Highlight label for exam rooms */
+.building17-svg-container .rl.is-exam-label {
+  fill: #5b21b6;
+  font-weight: 800;
+}
+[data-theme="dark"] .building17-svg-container .rl.is-exam-label {
+  fill: #e9d5ff;
+}
+
+.building17-svg-container .rl.out {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+
+/* Explicit room colors for Building 17 Floorplan */
+.building17-svg-container .room {
+  fill: #ffffff !important;
+  stroke: #94a3b8 !important;
+  stroke-width: 1.2 !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.building17-svg-container .room.is-non-exam-room {
+  fill: #ffffff !important;
+  stroke: #94a3b8 !important;
+  stroke-width: 1.2 !important;
+}
+[data-theme="dark"] .building17-svg-container .room.is-non-exam-room {
+  fill: #1e1b2e !important;
+  stroke: #64748b !important;
+}
+.building17-svg-container .room.is-non-exam-room:hover {
+  fill: #e2e8f0 !important;
+  stroke: #475569 !important;
+  stroke-width: 2 !important;
+}
+[data-theme="dark"] .building17-svg-container .room.is-non-exam-room:hover {
+  fill: #2d2640 !important;
+  stroke: #94a3b8 !important;
+}
+
+.building17-svg-container .room.is-exam-room {
+  fill: #f3e8ff !important;
+  stroke: #7c3aed !important;
+  stroke-width: 2.2 !important;
+}
+[data-theme="dark"] .building17-svg-container .room.is-exam-room {
+  fill: #3b1f54 !important;
+  stroke: #c4b5fd !important;
+  stroke-width: 2.2 !important;
+}
+.building17-svg-container .room.is-exam-room:hover {
+  fill: #ddd6fe !important;
+  stroke: #5b21b6 !important;
+  stroke-width: 3 !important;
+  filter: drop-shadow(0 0 8px rgba(124, 58, 237, 0.45));
+}
+[data-theme="dark"] .building17-svg-container .room.is-exam-room:hover {
+  fill: #581c87 !important;
+  stroke: #e9d5ff !important;
+}
+
+.building17-svg-container .rl {
+  fill: #1e293b !important;
+}
+[data-theme="dark"] .building17-svg-container .rl {
+  fill: #f8fafc !important;
+}
+
+.building17-svg-container .rl.is-exam-label {
+  fill: #4c1d95 !important;
+}
+[data-theme="dark"] .building17-svg-container .rl.is-exam-label {
+  fill: #ede9fe !important;
+}
+
+
+/* Full-width Seating Plan Room Box & Non-overlapping Wall */
+.seating-plan-room-box {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.room-wall-front {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  position: static !important;
+}
+
+.room-wall-front .door-badge {
+  position: static !important;
+}
